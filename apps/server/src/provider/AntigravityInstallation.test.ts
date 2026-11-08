@@ -688,10 +688,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Antigravity inst
           const windowsDirectory = path.join(baseDir, `windows-${name}`);
           yield* fs.makeDirectory(windowsDirectory);
           yield* fs.writeFileString(path.join(windowsDirectory, name), "cli");
-          expect(yield* windows.resolve("agy", { PATH: windowsDirectory })).toMatchObject({
-            executablePath: path.join(windowsDirectory, name),
-            harnessPath: null,
-          });
+          const selected = yield* windows.resolve("agy", { PATH: windowsDirectory });
+          expect(selected.harnessPath).toBeNull();
+          expect(selected.executablePath.toLowerCase()).toBe(
+            path.join(windowsDirectory, name).toLowerCase(),
+          );
+          expect(yield* fs.readFileString(selected.executablePath)).toBe("cli");
         }
       }),
   );
