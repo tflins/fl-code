@@ -39,11 +39,17 @@ jobs:
       T3CODE_TELEMETRY_CHANNEL: dev
       NODE_OPTIONS: --max-old-space-size=4096
     steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.tag || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
+      # checkout's credential cleanup fails on orphaned gitlinks in .repos.
+      - name: Checkout
+        env:
+          CHECKOUT_REF: ${{ inputs.tag || github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --tags origin '+refs/heads/main:refs/remotes/origin/main'
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach "$CHECKOUT_REF"
 
       - name: Validate release source
         run: |
