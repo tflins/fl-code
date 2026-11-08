@@ -1,0 +1,125 @@
+name: Fork Desktop Release
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "tflins-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tflins-vX.Y.Z-tflins.N tag on origin/main"
+        required: true
+        type: string
+      publish:
+        description: "Publish after verification (otherwise save Actions artifacts only)"
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'tflins/t3code'
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: tflins/t3code
+      # Unsigned builds are installed manually; do not offer an unverified update chain.
+      T3CODE_DESKTOP_DISABLE_UPDATE_FEED: "true"
+      T3CODE_DESKTOP_SIGNED: "false"
+      T3CODE_TELEMETRY_CHANNEL: dev
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release source
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          node .github/scripts/fork-release.cjs metadata "$RELEASE_TAG"
+          if [[ -n "$RELEASE_TAG" ]]; then
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+          printf 'RELEASE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Setup dependencies
+        uses: ./.github/actions/setup-ci-deps
+        with:
+          install-args: --frozen-lockfile --filter @t3tools/desktop... --filter t3... --filter @t3tools/web... --filter @t3tools/scripts...
+
+      - name: Check release and packaging behavior
+        working-directory: scripts
+        run: |
+          node --test ../.github/scripts/fork-release.test.cjs
+          vp test run --config ../vite.config.ts --dir . build-desktop-artifact.test.ts update-release-package-versions.test.ts
+
+      - name: Build desktop artifacts
+        run: |
+          vp run dist:desktop:artifact --platform mac --target dmg --arch arm64 \
+            --build-version "$RELEASE_VERSION" --output-dir release-fork --verbose
+
+      - name: Verify shipped application
+        run: |
+          mkdir -p "$RUNNER_TEMP/fork-app"
+          ditto -x -k "release-fork/T3-Code-$RELEASE_VERSION-arm64.zip" "$RUNNER_TEMP/fork-app"
+          app="$RUNNER_TEMP/fork-app/$(node -p "require('./apps/desktop/package.json').productName").app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$RELEASE_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.t3code
+          test ! -e "$app/Contents/Resources/app-update.yml"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
+          node scripts/smoke-desktop-app.ts \
+            --executable "$app/Contents/MacOS/$executable" \
+            --artifacts-dir "$RUNNER_TEMP/fork-launch-check"
+          node .github/scripts/fork-release.cjs checksums "$RELEASE_TAG" release-fork
+          (cd release-fork && shasum -a 256 -c SHA256SUMS)
+
+      - name: Save verification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-launch-check
+          path: ${{ runner.temp }}/fork-launch-check
+          if-no-files-found: ignore
+
+      - name: Save verified installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: t3code-${{ env.RELEASE_VERSION }}-mac-arm64
+          path: |
+            release-fork/*.dmg
+            release-fork/*.zip
+            release-fork/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish verified release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
+            node -e "if (!require(process.argv[1]).isDraft) throw new Error('Refusing to replace a published release')" "$RUNNER_TEMP/existing-release.json"
+          else
+            printf 'T3 Code 定制版 %s\n\n源码提交：%s\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证，仅供手动安装；包内不含自动更新源。\n\n保留原应用 ID 和数据目录。首次切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" > "$RUNNER_TEMP/fork-release-notes.md"
+            gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" --draft \
+              --title "T3 Code $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
+          fi
+          gh release upload "$RELEASE_TAG" --clobber \
+            "release-fork/T3-Code-$RELEASE_VERSION-arm64.dmg" \
+            "release-fork/T3-Code-$RELEASE_VERSION-arm64.zip" \
+            release-fork/SHA256SUMS
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest

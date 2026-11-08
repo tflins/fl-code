@@ -2809,9 +2809,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
+  const disableUpdateFeed = yield* Config.Boolean("T3CODE_DESKTOP_DISABLE_UPDATE_FEED").pipe(
+    Config.withDefault(false),
+  );
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
-  if (!isDesktopPreviewVersion(version)) {
+  if (!disableUpdateFeed && !isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];

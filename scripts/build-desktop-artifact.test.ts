@@ -528,6 +528,28 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
+      const manualInstall = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.0.33-tflins.1",
+        false,
+        false,
+        undefined,
+        undefined,
+      ).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({
+              env: {
+                GITHUB_REPOSITORY: "pingdotgg/t3code",
+                T3CODE_DESKTOP_DISABLE_UPDATE_FEED: "true",
+              },
+            }),
+          ),
+        ),
+      );
+      assert.isNull(manualInstall.publish);
+
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
       assert.deepStrictEqual(release.publish, [
