@@ -2,8 +2,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-function nightlyPrefix(upstreamTag) {
-  const match = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-nightly\.\d{8})\.[1-9]\d*$/.exec(
+function upstreamNightlyVersion(upstreamTag) {
+  const match = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-nightly\.\d{8}\.[1-9]\d*)$/.exec(
     upstreamTag,
   );
   if (!match || match[0] !== upstreamTag)
@@ -13,11 +13,13 @@ function nightlyPrefix(upstreamTag) {
 
 function releaseVersion(tag, upstreamTag) {
   const match =
-    /^tflins-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.\d{8}\.[1-9]\d*)$/.exec(tag);
+    /^tflins-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.\d{8}\.[1-9]\d*-tflins\.[1-9]\d*)$/.exec(
+      tag,
+    );
   if (!match || match[0] !== tag)
-    throw new Error("Expected tflins-vX.Y.Z-nightly.YYYYMMDD.N with a positive revision");
+    throw new Error("Expected tflins-vX.Y.Z-nightly.YYYYMMDD.B-tflins.N with a positive revision");
   const version = match[1];
-  if (version.slice(0, version.lastIndexOf(".")) !== nightlyPrefix(upstreamTag)) {
+  if (version.split("-tflins.")[0] !== upstreamNightlyVersion(upstreamTag)) {
     throw new Error("Tag base version differs from the pinned upstream nightly");
   }
   return version;
@@ -25,7 +27,7 @@ function releaseVersion(tag, upstreamTag) {
 
 function automaticReleaseTag(upstreamTag, runNumber) {
   if (!/^[1-9]\d*$/.test(String(runNumber))) throw new Error("Invalid workflow run number");
-  const tag = `tflins-v${nightlyPrefix(upstreamTag)}.${runNumber}`;
+  const tag = `tflins-v${upstreamNightlyVersion(upstreamTag)}-tflins.${runNumber}`;
   releaseVersion(tag, upstreamTag);
   return tag;
 }

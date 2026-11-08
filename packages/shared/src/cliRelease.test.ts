@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { cliArchiveTarCommand, newestCliReleaseVersion, parseChecksums } from "./cliRelease.ts";
+import {
+  cliReleaseChannelOf,
+  crossesReleaseTrack,
+  cliArchiveTarCommand,
+  newestCliReleaseVersion,
+  parseChecksums,
+} from "./cliRelease.ts";
 
 describe("cliRelease", () => {
+  it("keeps fork nightly revisions on the same release track", () => {
+    const upstream = "0.1.8-nightly.20261108.4367";
+    const fork = `${upstream}-tflins.4`;
+    expect(cliReleaseChannelOf(fork)).toBe("nightly");
+    expect(crossesReleaseTrack(upstream, fork)).toBe(false);
+    expect(crossesReleaseTrack("0.1.7", fork)).toBe(true);
+  });
   it("parses sha256sum output including binary-mode markers", () => {
     const checksums = parseChecksums(
       [

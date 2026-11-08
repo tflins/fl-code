@@ -531,7 +531,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const manualInstall = yield* createBuildConfig(
         "mac",
         "dmg",
-        "0.0.33-tflins.1",
+        "0.1.8-nightly.20261108.4367-tflins.1",
         false,
         false,
         undefined,
@@ -549,6 +549,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       );
       assert.isNull(manualInstall.publish);
+      assert.equal(manualInstall.productName, "T3 Code (Nightly)");
 
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);

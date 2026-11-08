@@ -148,7 +148,7 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
     const result = normalizeDesktopUpdateReleaseNotes(
       [
         { version: "0.0.41-nightly.20260914.1707", note: "- Nightly change 2" },
-        { version: "0.0.41-nightly.20260913.1700", note: "- Nightly change 1" },
+        { version: "0.0.41-nightly.20260913.1700-tflins.1", note: "- Nightly change 1" },
       ],
       "0.0.41-nightly.20260914.1707",
       "nightly",
