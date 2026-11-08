@@ -16,6 +16,7 @@ import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subage
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
+  currentThreadSubagents,
   immediateThreadRelationships,
   isParentThreadRelationship,
   threadRelationshipRowStatus,
@@ -456,23 +457,21 @@ export function ThreadRelationshipsPanel(props: {
   const runtimeSubagents = projectedSubagentsToRuntime(projected);
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
   const subagentsByThreadId = new Map(
-    projected
-      .filter((subagent) => subagent.childThreadId !== null)
-      .map((subagent) => [
-        subagent.childThreadId,
-        {
-          ...byId.get(subagent.id)!,
-          id: subagent.id,
-          threadId: subagent.threadId,
-          runId: subagent.runId,
-          nativeTaskRef: subagent.nativeTaskRef,
-          nativeStatus: subagent.status,
-          driver: subagent.driver,
-          providerInstanceId: subagent.providerInstanceId,
-          origin: subagent.origin,
-          modelSelection: subagent.modelSelection,
-        },
-      ]),
+    [...currentThreadSubagents(projected).values()].map((subagent) => [
+      subagent.childThreadId,
+      {
+        ...byId.get(subagent.id)!,
+        id: subagent.id,
+        threadId: subagent.threadId,
+        runId: subagent.runId,
+        nativeTaskRef: subagent.nativeTaskRef,
+        nativeStatus: subagent.status,
+        driver: subagent.driver,
+        providerInstanceId: subagent.providerInstanceId,
+        origin: subagent.origin,
+        modelSelection: subagent.modelSelection,
+      },
+    ]),
   );
   const workflowGroupsById = new Map(
     deriveWorkflowGroups(runtimeSubagents).map((group) => [group.workflow.id, group]),

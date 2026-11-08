@@ -119,6 +119,29 @@ describe("thread relationships", () => {
     ]);
   });
 
+  it.each([false, true])(
+    "keeps unfinished rounds visible regardless of task order (%s)",
+    (reverse) => {
+      const parent = ThreadId.make("thread-parent");
+      const child = ThreadId.make("thread-child");
+      const tasks = [
+        { childThreadId: child, status: "running" },
+        { childThreadId: child, status: "completed" },
+      ];
+      const graph = deriveThreadRelationshipGraph({
+        threads: [],
+        projection: {
+          thread: { id: parent, lineage: { parentThreadId: null } },
+          subagents: reverse ? tasks.toReversed() : tasks,
+          contextTransfers: [],
+        } as never,
+      });
+      expect(graph.edges).toEqual([
+        expect.objectContaining({ targetThreadId: child, status: "running" }),
+      ]);
+    },
+  );
+
   it("keeps missing parents and cycles navigable without recursive traversal", () => {
     const root = ThreadId.make("thread-root");
     const child = ThreadId.make("thread-child");

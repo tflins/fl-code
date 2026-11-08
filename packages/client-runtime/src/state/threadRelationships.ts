@@ -1,5 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type ThreadId,
@@ -101,7 +102,7 @@ export function deriveThreadRelationshipGraph(input: {
 
   if (input.projection !== null) {
     const ownerThreadId = input.projection.thread.id;
-    for (const subagent of input.projection.subagents) {
+    for (const subagent of currentThreadSubagents(input.projection.subagents).values()) {
       if (subagent.childThreadId === null) continue;
       const child = threadsById.get(subagent.childThreadId);
       addEdge({
@@ -127,6 +128,22 @@ export function deriveThreadRelationshipGraph(input: {
   }
 
   return { nodes, edges: [...edgesByKey.values()] };
+}
+
+export function currentThreadSubagents(subagents: ReadonlyArray<OrchestrationV2Subagent>) {
+  const current = new Map<ThreadId, OrchestrationV2Subagent>();
+  for (const task of subagents) {
+    if (task.childThreadId === null) continue;
+    const previous = current.get(task.childThreadId);
+    if (
+      previous !== undefined &&
+      isOrchestrationV2WorkActive(previous.status) &&
+      !isOrchestrationV2WorkActive(task.status)
+    )
+      continue;
+    current.set(task.childThreadId, task);
+  }
+  return current;
 }
 
 export function immediateThreadRelationships(

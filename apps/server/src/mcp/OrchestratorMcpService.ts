@@ -90,6 +90,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import {
   subagentResultForRun,
   delegatedTaskProgress,
+  scopeDelegatedTask,
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
   DispatchModeLimit,
@@ -99,7 +100,7 @@ import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
 } from "../orchestration-v2/ProjectionStore.ts";
-import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
+import { neverStarted, runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -458,7 +459,7 @@ function delegatedTaskRun(
       transfer.targetThreadId === task.childThreadId,
   );
   if (spawnTransfer === undefined) {
-    return childProjection.runs[0];
+    return childProjection.runs.find((run) => run.delegatedTaskId === undefined);
   }
   return spawnTransfer.targetRunId === null
     ? undefined
@@ -1500,7 +1501,7 @@ const make = Effect.gen(function* () {
       return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
     }
     const parentProjection = yield* loadTaskParent(scope.thread.threadId);
-    const childControls = yield* threadManagement
+    const childRecords = yield* threadManagement
       .getThreadRecords(
         task.childThreadId,
         [
@@ -1516,6 +1517,7 @@ const make = Effect.gen(function* () {
         { messageRoles: ["user"], omitSettledLeafNodes: true, omitSettledSubagents: true },
       )
       .pipe(Effect.mapError(threadManagementFailure));
+    const childControls = scopeDelegatedTask(childRecords, task.id);
     const childRun = delegatedTaskRun(childControls, task);
     const terminalRun = latestTerminalResultRun(childControls, childRun);
     const progress = delegatedTaskProgress(childControls);
@@ -1525,11 +1527,20 @@ const make = Effect.gen(function* () {
             .filter((run) => run.delegatedTaskId === task.id)
             .toSorted((a, b) => b.ordinal - a.ordinal)[0]
         : progress.resultRun;
+    const taskRuns = childControls.runs.filter((run) => run.delegatedTaskId === task.id);
     const taskWorkState =
       childRun?.delegatedTaskId === task.id
-        ? isTerminalTaskStatus(taskStatusForRun(taskResultRun))
+        ? taskResultRun !== undefined &&
+          isTerminalTaskStatus(taskStatusForRun(taskResultRun)) &&
+          taskRuns.every(neverStarted)
           ? "result_available"
-          : "working"
+          : delegatedTaskProgress({
+              ...childControls,
+              runs: taskRuns,
+              subagents: childControls.subagents.filter((subagent) =>
+                taskRuns.some((run) => run.id === subagent.runId),
+              ),
+            }).state
         : progress.state;
     const resultRunIds = [
       ...new Set(
@@ -1553,12 +1564,17 @@ const make = Effect.gen(function* () {
       task.result === null &&
       taskWorkState === "result_available" &&
       (yield* threadManagement
-        .delegatedTaskResultPending(task.childThreadId, childRun?.delegatedTaskId)
+        .delegatedTaskResultPending(task.childThreadId, task.id)
         .pipe(Effect.mapError(threadManagementFailure)));
+    const cancelled = task.status === "cancelled" && task.completionDelivery?.state === "disposed";
     const workState =
-      task.result !== null ? "result_available" : heldForRestart ? "working" : taskWorkState;
+      task.result !== null || cancelled
+        ? "result_available"
+        : heldForRestart
+          ? "working"
+          : taskWorkState;
     const status =
-      task.result !== null
+      task.result !== null || cancelled
         ? taskStatusForRun(
             task.status === "completed" ||
               task.status === "failed" ||
@@ -1985,7 +2001,7 @@ const make = Effect.gen(function* () {
     return task;
   });
 
-  return OrchestratorMcpService.of({
+  const service: OrchestratorMcpService["Service"] = OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
       const { parent, limits } = yield* loadCaller(scope);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
@@ -2617,9 +2633,7 @@ const make = Effect.gen(function* () {
       }
       const key = yield* requestKey(input.clientRequestId);
       const parentProjection = yield* loadThreadRecords(scope.thread.threadId, []);
-      // Cancelling stops the child and every task under it, each a write to a
-      // thread its user may have raised above the parent's modes since it was
-      // delegated. All of them are checked before anything is stopped.
+      // Descendants may now use broader modes; check the ceiling before stopping any work.
       const assertStoppable = Effect.fn("OrchestratorMcpService.assertStoppable")(function* (
         threadId: ThreadId,
       ): Effect.fn.Return<void, OrchestratorMcpFailure> {
@@ -2670,6 +2684,47 @@ const make = Effect.gen(function* () {
       const stopChild = Effect.gen(function* () {
         const commandId = stableCommandId({ scope, requestKey: key, operation: "cancel-task" });
         const reason = agentStopReason(input.reason);
+        const child = yield* threadManagement
+          .getThreadRecords(childThreadId, ["runs"])
+          .pipe(Effect.mapError(threadManagementFailure));
+        const taskRuns = child.runs.filter(
+          (run) =>
+            run.delegatedTaskId === input.taskId ||
+            (run.id === current.childRunId &&
+              child.runs.some((other) => other.delegatedTaskId !== undefined)),
+        );
+        if (taskRuns.length > 0) {
+          const nested = yield* threadManagement
+            .getThreadRecords(childThreadId, ["subagents"], {
+              subagentRunIds: taskRuns.map((run) => run.id),
+              omitSettledSubagents: true,
+            })
+            .pipe(Effect.mapError(threadManagementFailure));
+          for (const task of nested.subagents) {
+            if (task.origin !== "app_owned" || task.result !== null) continue;
+            yield* service.cancelTask(
+              { ...scope, thread: { ...scope.thread, threadId: childThreadId } },
+              { taskId: task.id, clientRequestId: `${key}:${task.id}` },
+            );
+          }
+          for (const run of taskRuns) {
+            if (ThreadManagementService.isTerminalRunStatus(run.status)) continue;
+            yield* threadManagement
+              .dispatch({
+                type: run.status === "queued" ? "queued-run.cancel" : "run.interrupt",
+                commandId: stableCommandId({
+                  scope,
+                  requestKey: key,
+                  operation: `cancel-task-run:${run.id}`,
+                }),
+                threadId: childThreadId,
+                runId: run.id,
+              })
+              .pipe(Effect.mapError(threadManagementFailure));
+          }
+          return;
+        }
+        if (child.runs.some((run) => run.delegatedTaskId !== undefined)) return;
         yield* threadManagement
           .dispatch({
             type: "thread.stop",
@@ -2769,7 +2824,7 @@ const make = Effect.gen(function* () {
         return subagents.some((task) => task.id === input.taskId && task.status === "cancelled");
       }).pipe(Effect.mapError(threadManagementFailure));
       if (isTerminalTaskStatus(current.status)) {
-        // The child can still run work for another turn, so it is stopped either way.
+        // A terminal run can still own nested work that needs cancellation.
         yield* stopWithinLimit;
         const cancelled = yield* cancelOrphan;
         yield* disposeCompletionDelivery;
@@ -2779,6 +2834,10 @@ const make = Effect.gen(function* () {
         } satisfies OrchestratorMcpTaskCancelResult;
       }
       const child = yield* loadThreadRecords(childThreadId, ["runs"]);
+      if (current.childRunId === null && (yield* cancelOrphan)) {
+        yield* disposeCompletionDelivery;
+        return { taskId: input.taskId, status: "cancelled" };
+      }
       if (
         current.workState !== "waiting_for_children" &&
         ThreadManagementService.latestActiveRun(child) === undefined &&
@@ -2796,6 +2855,7 @@ const make = Effect.gen(function* () {
       }
       yield* stopWithinLimit;
       yield* disposeCompletionDelivery.pipe(
+        Effect.andThen(cancelOrphan),
         Effect.catchCause((cause) =>
           Effect.logWarning("orchestrator-mcp.cancel-task.delivery-dispose-failed", {
             taskId: input.taskId,
@@ -3328,6 +3388,7 @@ const make = Effect.gen(function* () {
       } satisfies OrchestratorMcpThreadInterruptResult;
     }),
   });
+  return service;
 });
 
 export const layer: Layer.Layer<

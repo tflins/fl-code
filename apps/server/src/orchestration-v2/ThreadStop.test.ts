@@ -167,6 +167,7 @@ it.effect.each([
   ["idle", "subagent.stop"],
   ["running", "subagent.stop"],
   ["bound", "subagent.stop"],
+  ["bound-disposed", "subagent.stop"],
   ["correlated", "subagent.stop"],
   ["archived", "thread.stop"],
   ["missing", "thread.stop"],
@@ -281,7 +282,7 @@ it.effect.each([
       const childRunStatus =
         childState === "running" || childState === "queued" || childState === "waiting"
           ? childState
-          : childState === "bound"
+          : childState === "bound" || childState === "bound-disposed"
             ? "running"
             : "completed";
       yield* apply({
@@ -303,14 +304,18 @@ it.effect.each([
           ...runAtStart,
           status: childRunStatus,
           completedAt: childRunStatus === "completed" ? now : null,
-          ...(childState === "correlated" || childState === "bound"
+          ...(childState === "correlated" ||
+          childState === "bound" ||
+          childState === "bound-disposed"
             ? { delegatedTaskId: taskId }
             : {}),
         },
       });
       assert.equal(
         (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]?.delegatedTaskId,
-        childState === "correlated" || childState === "bound" ? taskId : undefined,
+        childState === "correlated" || childState === "bound" || childState === "bound-disposed"
+          ? taskId
+          : undefined,
       );
       if (childState === "provider-active" || childState === "roster") {
         yield* apply({
@@ -418,6 +423,14 @@ it.effect.each([
           threadId: childThreadId,
           occurredAt: now,
           payload: { ...child.thread, archivedAt: now },
+        });
+      }
+      if (childState === "bound-disposed") {
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.dispose",
+          commandId: CommandId.make("dispose-bound-task"),
+          parentThreadId,
+          taskId,
         });
       }
       const childBeforeStop = yield* orchestrator.getThreadProjection(childThreadId);

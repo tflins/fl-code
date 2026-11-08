@@ -4178,17 +4178,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       AND json_extract(task.payload_json, '$.origin') = 'app_owned'
                       AND json_extract(task.payload_json, '$.result') IS NULL
                   ) OR (
-                    -- The original task still waits for the latest unheld work.
+                    -- The original task owns unbound runs, including its recovery continuations.
                     (SELECT status FROM orchestration_v2_projection_runs
                      WHERE thread_id = child.thread_id
+                       AND json_extract(payload_json, '$.delegatedTaskId') IS NULL
                        AND NOT (status = 'queued' AND json_extract(payload_json, '$.queueHeld') IS 1)
                      ORDER BY ordinal DESC LIMIT 1
                     ) IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
-                    AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_context_transfers
-                    WHERE source_thread_id = child.thread_id
-                      AND target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
-                      AND type = 'subagent_result'
+                    AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_subagents AS original
+                    WHERE original.subagent_id = json_extract(child.payload_json, '$.forkedFrom.nodeId')
+                      AND json_extract(original.payload_json, '$.result') IS NULL
                   )))
               `;
             case "restart-continuations":

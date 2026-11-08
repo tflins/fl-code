@@ -266,10 +266,15 @@ Each independent delegated review round uses a new `delegate_task` call with the
 original brief, prior findings, responses, and unresolved objections. Track each
 round by its own `taskId` and use a distinct `clientRequestId` per round, stable
 across retries of that round.
-A follow-up that needs the same child's conversation goes through `t3_thread_send`
-on its `childThreadId`. After the original task completes, that follow-up runs as a
-fresh task in the child thread; it does not reopen the completed task or change its
-published result.
+明确要求保留同一协作者继续讨论、返修或复验时，通过 `t3_thread_send` 向原
+`childThreadId` 发送消息，使用 `mode: "queue"`，不设置 `freshContext`。每个排队轮次
+都有独立的 `taskId`，包括首轮尚未结束时的排队；按返回的任务 ID 追踪结果，已发布的旧结果不变。
+`steer` 是对当前轮次追加信息，`restart` 会中断并重启当前轮次，不用于排队新一轮。
+同一次发送重试复用 `clientRequestId`，新的轮次使用新的值。
+
+后续任务等待其 run 创建的嵌套委派及其结果投递；嵌套结果唤醒继续归属原轮次，
+不会追加到另一个正在运行的轮次。provider 原生后台工作仍按线程等待，因为现有
+后台列表不保证包含应用轮次的归属。持久会话也不保证无限上下文或自动共享信息。
 
 Delegation requires an active parent run owned by the MCP credential's
 provider session. The request becomes the V2 command

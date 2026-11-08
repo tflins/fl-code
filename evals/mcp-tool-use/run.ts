@@ -1937,6 +1937,11 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
       times: 8,
     }),
   );
+  const modelPrefix = yield* Config.String("CODEX_EVAL_MODEL_PREFIX").pipe(Config.withDefault(""));
+  const requestBody =
+    proxy !== undefined && typeof body === "object" && body !== null && "model" in body
+      ? { ...body, model: `${modelPrefix}${body.model}` }
+      : body;
   const response = yield* HttpClientRequest.post(
     `${proxy?.url ?? "https://api.anthropic.com/v1"}/${responses ? "responses" : "messages"}`,
   ).pipe(
@@ -1947,7 +1952,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
       "anthropic-beta": "advanced-tool-use-2025-11-20",
       ...proxy?.headers,
     }),
-    HttpClientRequest.bodyJson(body),
+    HttpClientRequest.bodyJson(requestBody),
     Effect.flatMap(client.execute),
   );
   if (response.status !== 200) {

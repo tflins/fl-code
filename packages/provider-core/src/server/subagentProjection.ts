@@ -230,6 +230,23 @@ export function subagentResultForRun(
   };
 }
 
+export function scopeDelegatedTask<
+  T extends Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">,
+>(projection: T, taskId: NodeId): T {
+  if (projection.runs.every((run) => run.delegatedTaskId === undefined)) return projection;
+  const original =
+    projection.thread.forkedFrom?.type === "node" && projection.thread.forkedFrom.nodeId === taskId;
+  const runs = projection.runs.filter(
+    (run) => run.delegatedTaskId === taskId || (original && run.delegatedTaskId === undefined),
+  );
+  const runIds = new Set(runs.map((run) => run.id));
+  return {
+    ...projection,
+    runs,
+    subagents: projection.subagents.filter((task) => task.runId !== null && runIds.has(task.runId)),
+  };
+}
+
 export function delegatedTaskProgress(projection: {
   readonly runs: OrchestrationV2ThreadProjection["runs"];
   readonly messages: ReadonlyArray<
