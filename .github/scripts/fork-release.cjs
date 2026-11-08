@@ -2,21 +2,31 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-function releaseVersion(tag, baseVersion) {
-  const match = /^tflins-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-tflins\.[1-9]\d*)$/.exec(tag);
+function nightlyPrefix(upstreamTag) {
+  const match = /^v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-nightly\.\d{8})\.[1-9]\d*$/.exec(
+    upstreamTag,
+  );
+  if (!match || match[0] !== upstreamTag)
+    throw new Error("Expected a published upstream nightly tag");
+  return match[1];
+}
+
+function releaseVersion(tag, upstreamTag) {
+  const match =
+    /^tflins-v((0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-nightly\.\d{8}\.[1-9]\d*)$/.exec(tag);
   if (!match || match[0] !== tag)
-    throw new Error("Expected tflins-vX.Y.Z-tflins.N with a positive revision");
+    throw new Error("Expected tflins-vX.Y.Z-nightly.YYYYMMDD.N with a positive revision");
   const version = match[1];
-  if (version.split("-")[0] !== baseVersion.split("-")[0]) {
-    throw new Error("Tag base version differs from apps/desktop/package.json");
+  if (version.slice(0, version.lastIndexOf(".")) !== nightlyPrefix(upstreamTag)) {
+    throw new Error("Tag base version differs from the pinned upstream nightly");
   }
   return version;
 }
 
-function automaticReleaseTag(baseVersion, runNumber) {
+function automaticReleaseTag(upstreamTag, runNumber) {
   if (!/^[1-9]\d*$/.test(String(runNumber))) throw new Error("Invalid workflow run number");
-  const tag = `tflins-v${baseVersion.split("-")[0]}-tflins.${runNumber}`;
-  releaseVersion(tag, baseVersion);
+  const tag = `tflins-v${nightlyPrefix(upstreamTag)}.${runNumber}`;
+  releaseVersion(tag, upstreamTag);
   return tag;
 }
 
@@ -34,11 +44,14 @@ module.exports = { releaseVersion, automaticReleaseTag, writeChecksums };
 
 if (require.main === module) {
   const [operation, requestedTag, directory] = process.argv.slice(2);
-  const manifest = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8"));
-  const tag = requestedTag || automaticReleaseTag(manifest.version, process.env.GITHUB_RUN_NUMBER);
-  const version = releaseVersion(tag, manifest.version);
+  const { upstreamTag } = JSON.parse(fs.readFileSync(".github/fork-release.json", "utf8"));
+  const tag = requestedTag || automaticReleaseTag(upstreamTag, process.env.GITHUB_RUN_NUMBER);
+  const version = releaseVersion(tag, upstreamTag);
   if (operation === "metadata") {
-    fs.appendFileSync(process.env.GITHUB_ENV, `RELEASE_VERSION=${version}\nRELEASE_TAG=${tag}\n`);
+    fs.appendFileSync(
+      process.env.GITHUB_ENV,
+      `RELEASE_VERSION=${version}\nRELEASE_TAG=${tag}\nUPSTREAM_NIGHTLY_TAG=${upstreamTag}\n`,
+    );
   } else if (operation === "checksums" && directory) {
     writeChecksums(directory, version);
   } else {
