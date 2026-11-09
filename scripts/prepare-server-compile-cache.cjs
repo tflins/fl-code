@@ -36,11 +36,7 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
     const executableDir = path.join(bundleRoot, "Contents", "MacOS");
     const executableName =
       packager.platformSpecificBuildOptions?.extendInfo?.CFBundleExecutable ?? product;
-    const sourceExecutable = path.join(executableDir, product);
     executable = path.join(executableDir, executableName);
-    if (sourceExecutable !== executable) {
-      fs.renameSync(sourceExecutable, executable);
-    }
   } else {
     executable = path.join(
       appOutDir,
