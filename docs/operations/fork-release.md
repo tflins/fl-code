@@ -23,9 +23,11 @@ git push origin main
 
 ## 安装与更新范围
 
-当前流程未配置 Apple Developer ID 签名和公证，产物用于手动安装，不提供应用内自动升级。`T3CODE_DESKTOP_DISABLE_UPDATE_FEED=true` 明确禁止包内更新源，校验步骤还会确认产物没有 `app-update.yml`，避免更新到官方或未经验证的定制包。未来启用自动升级，需要另外配置签名、公证、自有更新清单，并验证升级链路。
+当前流程未配置 Apple Developer ID 签名和公证，因此不启用 Electron 的签名自动更新源。`T3CODE_DESKTOP_DISABLE_UPDATE_FEED=true` 继续禁止包内 `app-update.yml`，避免把未签名构建接入官方更新通道。
 
-保留上游应用 ID 和数据目录，应用名为 `T3 Code (Nightly)`，首次切换前备份数据，退出旧应用后再替换安装；不要让两份应用同时操作同一数据目录。旧版本可能无法读取新版迁移后的数据库，应用回退与数据恢复应一起考虑。本流程的启动检查使用仓库测试数据库，不访问用户的真实 T3 home。
+定制版从包含自更新器的版本开始，从 GitHub API 查询 `tflins-v*` 预发布，只接受同一 Release 中的 Apple Silicon ZIP 和 `SHA256SUMS`。应用校验 SHA256、版本、应用 ID 和可执行文件后，在应用所在卷解压临时目录，递归清除 quarantine，退出后替换原 `.app` 并重启。安装目录当前用户可写时不需要 `sudo`，也不需要手工执行 `xattr`。
+
+自更新器不会绕过 Gatekeeper 或 Apple 公证。首次从旧版切换到包含自更新器的版本仍需手动安装；如果安装目录不可写，应用会报告错误并继续运行当前版本。保留原应用 ID 和数据目录，应用名为 `T3 Code (Nightly)`，切换前备份数据，不要让两份应用同时操作同一数据目录。旧版本可能无法读取新版迁移后的数据库，应用回退与数据恢复应一起考虑。本流程和更新器测试使用隔离临时目录或仓库测试数据库，不访问用户的真实 T3 home。
 
 GitHub 使用 `macos-15` 的 ARM64 runner，发布前还检查实际架构；runner 标签以 [GitHub 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) 为准。Windows、Intel Mac、Linux 和手机打包不在此定制工作流范围内。
 

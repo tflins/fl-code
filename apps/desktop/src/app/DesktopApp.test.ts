@@ -45,6 +45,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopRendererHistory from "../telemetry/DesktopRendererHistory.ts";
+import * as DesktopReleaseUpdates from "../updates/DesktopReleaseUpdates.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
@@ -142,6 +143,11 @@ it.effect.each([false, true])(
           } as PreviewPasskeys.PreviewPasskeys["Service"]),
           Effect.provideService(DesktopApplicationMenu.DesktopApplicationMenu, {
             configure: Effect.void,
+          }),
+          Effect.provideService(DesktopReleaseUpdates.DesktopReleaseUpdates, {
+            supported: false,
+            checkAndPrompt: Effect.void,
+            listen: Effect.void,
           }),
           Effect.provideService(DesktopUpdates.DesktopUpdates, {
             configure: Effect.void,

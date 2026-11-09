@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off -- Poll TCC only while the native permission helper is open.
 import * as Electron from "electron";
 import { MAC_PERMISSION_HELPER_CHANNEL } from "../ipc/channels.ts";
+import { macAppBundlePath } from "../app/macAppBundlePath.ts";
 
 import {
   settingsHelperBounds,
@@ -17,10 +18,6 @@ const permissionGranted = (permission: MacPermission) => {
     return Electron.systemPreferences.isTrustedAccessibilityClient(false);
   return false;
 };
-
-function macAppBundlePath(executable: string): string | undefined {
-  return /^(.+\.app)\/Contents\/MacOS\/[^/]+$/.exec(executable)?.[1];
-}
 
 const escapeHtml = (value: string) =>
   value.replace(/[&<>"']/g, (character) => {

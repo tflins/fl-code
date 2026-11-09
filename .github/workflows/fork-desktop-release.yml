@@ -33,7 +33,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
       T3CODE_DESKTOP_UPDATE_REPOSITORY: tflins/t3code
-      # Unsigned builds are installed manually; do not offer an unverified update chain.
+      # The fork updater replaces verified ZIPs itself; keep electron-updater feeds disabled.
       T3CODE_DESKTOP_DISABLE_UPDATE_FEED: "true"
       T3CODE_DESKTOP_SIGNED: "false"
       T3CODE_TELEMETRY_CHANNEL: dev
@@ -123,7 +123,7 @@ jobs:
           if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
             node -e "if (!require(process.argv[1]).isDraft) throw new Error('Refusing to replace a published release')" "$RUNNER_TEMP/existing-release.json"
           else
-            printf 'T3 Code 定制版 %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用本仓库的构建序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证，仅供手动安装；包内不含自动更新源。\n\n保留原应用 ID 和数据目录。首次切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
+            printf 'T3 Code 定制版 %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用本仓库的构建序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证。安装本次版本后，可使用应用内“检查更新”从 GitHub 下载并校验后续 ZIP，然后自动替换并重启。首次切换到支持更新的版本仍需手动安装。\n\n保留原应用 ID 和数据目录。切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
             gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" --draft \
               --title "T3 Code $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
           fi

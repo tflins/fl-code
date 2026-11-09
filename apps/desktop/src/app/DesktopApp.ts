@@ -34,6 +34,7 @@ import * as DesktopShellEnvironment from "../shell/DesktopShellEnvironment.ts";
 import * as DesktopStartupRecovery from "./DesktopStartupRecovery.ts";
 import * as DesktopState from "./DesktopState.ts";
 import * as DesktopRemoteUpdates from "../updates/DesktopRemoteUpdates.ts";
+import * as DesktopReleaseUpdates from "../updates/DesktopReleaseUpdates.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopSnapShot from "../snapShot/DesktopSnapShot.ts";
 import * as DesktopWslBackend from "../wsl/DesktopWslBackend.ts";
@@ -294,6 +295,7 @@ const startup = Effect.gen(function* () {
   const preReadyElectronOptions = yield* DesktopPreReadyPlatform.DesktopPreReadyElectronOptions;
   const safeStorage = yield* ElectronSafeStorage.ElectronSafeStorage;
   const updates = yield* DesktopUpdates.DesktopUpdates;
+  const releaseUpdates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const previewPasskeys = yield* PreviewPasskeys.PreviewPasskeys;
 
@@ -355,6 +357,7 @@ const startup = Effect.gen(function* () {
   yield* previewPasskeys.configure;
   yield* applicationMenu.configure;
   yield* updates.configure;
+  yield* releaseUpdates.listen.pipe(Effect.forkScoped);
   yield* DesktopRemoteUpdates.listen;
   yield* DesktopStartupRecovery.listen;
   // Portal identity is prepared pre-ready; MIME helpers must not gate the backend or window.

@@ -10,6 +10,7 @@ import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopReleaseUpdates from "../updates/DesktopReleaseUpdates.ts";
 import * as DesktopUpdates from "../updates/DesktopUpdates.ts";
 import * as DesktopWindow from "./DesktopWindow.ts";
 
@@ -33,6 +34,7 @@ export class DesktopApplicationMenu extends Context.Service<
 >()("@t3tools/desktop/window/DesktopApplicationMenu") {}
 
 type DesktopApplicationMenuRuntimeServices =
+  | DesktopReleaseUpdates.DesktopReleaseUpdates
   | DesktopUpdates.DesktopUpdates
   | DesktopWindow.DesktopWindow
   | ElectronDialog.ElectronDialog;
@@ -67,6 +69,7 @@ const runMainContentsCommand = Effect.fn("desktop.menu.runMainContentsCommand")(
 const checkForUpdatesFromMenu = Effect.gen(function* () {
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
+
   const result = yield* updates.check("menu");
   const updateState = result.state;
 
@@ -89,8 +92,18 @@ const checkForUpdatesFromMenu = Effect.gen(function* () {
 }).pipe(Effect.withSpan("desktop.menu.checkForUpdates"));
 
 const handleCheckForUpdatesMenuClick = Effect.gen(function* () {
+  const releaseUpdates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
   const updates = yield* DesktopUpdates.DesktopUpdates;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
+
+  // The fork has no electron-updater feed, but it can verify and install its own release ZIP.
+  if (releaseUpdates.supported) {
+    const desktopWindow = yield* DesktopWindow.DesktopWindow;
+    yield* desktopWindow.activate;
+    yield* releaseUpdates.checkAndPrompt;
+    return;
+  }
+
   const disabledReason = yield* updates.disabledReason;
   if (Option.isSome(disabledReason)) {
     yield* logUpdaterInfo("manual update check requested, but updates are disabled", {
