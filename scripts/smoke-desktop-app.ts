@@ -39,6 +39,8 @@ NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite")
 let step = "launching the app";
 let app: ElectronApplication | undefined;
 try {
+  const launchEnvironment = { ...process.env };
+  delete launchEnvironment.ELECTRON_RUN_AS_NODE;
   app = await _electron.launch({
     executablePath: executable,
     // Linux CI runners do not allow the Chromium sandbox's user namespaces.
@@ -46,7 +48,7 @@ try {
     // HOME stays real: on macOS a fake HOME has no login keychain, and safeStorage blocks the
     // main process on a keychain dialog. macOS keeps its Electron profile in the runner's HOME.
     env: {
-      ...process.env,
+      ...launchEnvironment,
       XDG_CONFIG_HOME: NodePath.join(home, ".config"),
       XDG_DATA_HOME: NodePath.join(home, ".local/share"),
       T3CODE_HOME: t3Home,

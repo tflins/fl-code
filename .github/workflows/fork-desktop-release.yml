@@ -94,6 +94,13 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.t3code
           test ! -e "$app/Contents/Resources/app-update.yml"
           test -x "$app/Contents/MacOS/T3 Code (Nightly)"
+          for helper in \
+            "FL Code (Nightly) Helper" \
+            "FL Code (Nightly) Helper (GPU)" \
+            "FL Code (Nightly) Helper (Plugin)" \
+            "FL Code (Nightly) Helper (Renderer)"; do
+            test -x "$app/Contents/Frameworks/$helper.app/Contents/MacOS/$helper"
+          done
           node scripts/smoke-desktop-app.ts \
             --executable "$app/Contents/MacOS/T3 Code (Nightly)" \
             --artifacts-dir "$RUNNER_TEMP/fork-launch-check"

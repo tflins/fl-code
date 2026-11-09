@@ -3,12 +3,24 @@ const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { alignMacHelperBundleNames } = require("./macos-bundle-name.cjs");
 
 // afterPack runs before signing and installer creation, against the final ASAR layout.
 module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => {
   if (!["darwin", "win32", "linux"].includes(electronPlatformName)) {
     console.log(`[server-compile-cache] Skipping unsupported target ${electronPlatformName}`);
     return;
+  }
+  const product = packager.appInfo.productFilename;
+  if (electronPlatformName === "darwin") {
+    const bundleName = packager.platformSpecificBuildOptions?.extendInfo?.CFBundleName;
+    if (typeof bundleName === "string") {
+      alignMacHelperBundleNames({
+        appOutDir,
+        productName: product,
+        bundleName,
+      });
+    }
   }
   const targetArch = ["ia32", "x64", "armv7l", "arm64", "universal"][arch];
   const runsWithRosetta =
@@ -25,7 +37,6 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
     );
     return;
   }
-  const product = packager.appInfo.productFilename;
   const resources =
     electronPlatformName === "darwin"
       ? path.join(appOutDir, `${product}.app`, "Contents", "Resources")
