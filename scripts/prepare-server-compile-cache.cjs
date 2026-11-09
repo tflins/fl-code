@@ -26,17 +26,27 @@ module.exports = async ({ appOutDir, electronPlatformName, arch, packager }) => 
     return;
   }
   const product = packager.appInfo.productFilename;
+  const bundleRoot = path.join(appOutDir, `${product}.app`);
   const resources =
     electronPlatformName === "darwin"
-      ? path.join(appOutDir, `${product}.app`, "Contents", "Resources")
+      ? path.join(bundleRoot, "Contents", "Resources")
       : path.join(appOutDir, "resources");
-  const executable =
-    electronPlatformName === "darwin"
-      ? path.join(appOutDir, `${product}.app`, "Contents", "MacOS", product)
-      : path.join(
-          appOutDir,
-          electronPlatformName === "win32" ? `${product}.exe` : packager.executableName,
-        );
+  let executable;
+  if (electronPlatformName === "darwin") {
+    const executableDir = path.join(bundleRoot, "Contents", "MacOS");
+    const executableName =
+      packager.platformSpecificBuildOptions?.extendInfo?.CFBundleExecutable ?? product;
+    const sourceExecutable = path.join(executableDir, product);
+    executable = path.join(executableDir, executableName);
+    if (sourceExecutable !== executable) {
+      fs.renameSync(sourceExecutable, executable);
+    }
+  } else {
+    executable = path.join(
+      appOutDir,
+      electronPlatformName === "win32" ? `${product}.exe` : packager.executableName,
+    );
+  }
   const helper = path.join(
     resources,
     "app.asar",
