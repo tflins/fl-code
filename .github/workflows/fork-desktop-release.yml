@@ -85,17 +85,17 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/fork-app"
           ditto -x -k "release-fork/T3-Code-$RELEASE_VERSION-arm64.zip" "$RUNNER_TEMP/fork-app"
-          # Keep the bundle directory stable so existing fork updaters can replace it.
+          # Keep the bundle and executable names stable for signing and fork self-updates.
           app="$RUNNER_TEMP/fork-app/T3 Code (Nightly).app"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$RELEASE_VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$app/Contents/Info.plist")" = "FL Code (Nightly)"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleName' "$app/Contents/Info.plist")" = "FL Code (Nightly)"
-          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")" = "FL Code (Nightly)"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")" = "T3 Code (Nightly)"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.t3code
           test ! -e "$app/Contents/Resources/app-update.yml"
-          test -x "$app/Contents/MacOS/FL Code (Nightly)"
+          test -x "$app/Contents/MacOS/T3 Code (Nightly)"
           node scripts/smoke-desktop-app.ts \
-            --executable "$app/Contents/MacOS/FL Code (Nightly)" \
+            --executable "$app/Contents/MacOS/T3 Code (Nightly)" \
             --artifacts-dir "$RUNNER_TEMP/fork-launch-check"
           node .github/scripts/fork-release.cjs checksums "$RELEASE_TAG" release-fork
           (cd release-fork && shasum -a 256 -c SHA256SUMS)

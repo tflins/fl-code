@@ -554,12 +554,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         extendInfo: {
           CFBundleDisplayName: string;
           CFBundleName: string;
-          CFBundleExecutable: string;
         };
       };
       assert.equal(macConfig.extendInfo.CFBundleDisplayName, "FL Code (Nightly)");
       assert.equal(macConfig.extendInfo.CFBundleName, "FL Code (Nightly)");
-      assert.equal(macConfig.extendInfo.CFBundleExecutable, "FL Code (Nightly)");
 
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
