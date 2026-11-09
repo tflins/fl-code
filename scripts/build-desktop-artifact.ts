@@ -2764,6 +2764,10 @@ export function resolveDesktopProductName(version: string): string {
     : (desktopPackageJson.productName ?? "T3 Code");
 }
 
+export function resolveDesktopAppDisplayName(version: string): string {
+  return resolveDesktopUpdateChannel(version) === "nightly" ? "FL Code (Nightly)" : "FL Code";
+}
+
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   platform: typeof BuildPlatform.Type,
   target: string,
@@ -2832,27 +2836,30 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    const displayName = resolveDesktopAppDisplayName(version);
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
+        CFBundleDisplayName: displayName,
+        CFBundleName: displayName,
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
-          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+          "FL Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
         NSCalendarsUsageDescription:
-          "Commands you run in T3 Code may need access to your calendars.",
+          "Commands you run in FL Code may need access to your calendars.",
         NSCalendarsFullAccessUsageDescription:
-          "Commands you run in T3 Code may need to read and write your calendar events.",
+          "Commands you run in FL Code may need to read and write your calendar events.",
         NSCalendarsWriteOnlyAccessUsageDescription:
-          "Commands you run in T3 Code may need to add events to your calendars.",
+          "Commands you run in FL Code may need to add events to your calendars.",
         NSScreenCaptureUsageDescription:
-          "T3 Code captures the active window when you use the window capture shortcut.",
+          "FL Code captures the active window when you use the window capture shortcut.",
         NSCameraUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the camera.",
+          "FL Code lets commands run by terminals and coding agents use the camera.",
         NSMicrophoneUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the microphone.",
+          "FL Code lets commands run by terminals and coding agents use the microphone.",
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2866,7 +2873,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
       protocols: [
         {
-          name: "T3 Code",
+          name: "FL Code",
           schemes: ["t3code", "t3code-dev"],
         },
         {
@@ -2888,7 +2895,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac" && target === "dmg") {
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
+      title: `${resolveDesktopAppDisplayName(version)} ${version} Installer`,
       background: `dmg/dmg-background-${updateChannel}.png`,
       window: {
         width: 640,
@@ -2919,7 +2926,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       maintainer: "T3 Tools <hello@t3.codes>",
       protocols: [
         {
-          name: "T3 Code",
+          name: "FL Code",
           schemes: ["t3code", "t3code-dev"],
         },
       ],

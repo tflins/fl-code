@@ -87,6 +87,7 @@ jobs:
           ditto -x -k "release-fork/T3-Code-$RELEASE_VERSION-arm64.zip" "$RUNNER_TEMP/fork-app"
           app="$RUNNER_TEMP/fork-app/T3 Code (Nightly).app"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$RELEASE_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleDisplayName' "$app/Contents/Info.plist")" = "FL Code (Nightly)"
           test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$app/Contents/Info.plist")" = com.t3tools.t3code
           test ! -e "$app/Contents/Resources/app-update.yml"
           executable=$(/usr/libexec/PlistBuddy -c 'Print CFBundleExecutable' "$app/Contents/Info.plist")
@@ -123,9 +124,9 @@ jobs:
           if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
             node -e "if (!require(process.argv[1]).isDraft) throw new Error('Refusing to replace a published release')" "$RUNNER_TEMP/existing-release.json"
           else
-            printf 'T3 Code 定制版 %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用本仓库的构建序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证。安装本次版本后，可使用应用内“检查更新”从 GitHub 下载并校验后续 ZIP，然后自动替换并重启。首次切换到支持更新的版本仍需手动安装。\n\n保留原应用 ID 和数据目录。切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
+            printf 'FL Code Nightly %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用本仓库的构建序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证。安装本次版本后，可使用应用内“检查更新”从 GitHub 下载并校验后续 ZIP，然后自动替换并重启。首次切换到支持更新的版本仍需手动安装。\n\n保留原应用 ID、应用包文件名和数据目录，仅将用户可见名称改为 FL Code。切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
             gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" --draft \
-              --title "T3 Code $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
+              --title "FL Code Nightly $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
           fi
           gh release upload "$RELEASE_TAG" --clobber \
             "release-fork/T3-Code-$RELEASE_VERSION-arm64.dmg" \

@@ -175,7 +175,7 @@ fail() {
     /bin/mv "$backup" "$target" || true
   fi
   /usr/bin/open "$target" >/dev/null 2>&1 || true
-  /usr/bin/osascript -e 'display notification "The previous version was restored." with title "T3 Code update failed"' >/dev/null 2>&1 || true
+  /usr/bin/osascript -e 'display notification "The previous version was restored." with title "App update failed"' >/dev/null 2>&1 || true
   exit 1
 }
 

@@ -235,7 +235,7 @@ const make = Effect.gen(function* () {
       yield* electronDialog.showMessageBox({
         type: "info",
         title: "You're up to date!",
-        message: `T3 Code ${result.currentVersion} is currently the newest fork release available.`,
+        message: `${environment.displayName} ${result.currentVersion} is currently the newest fork release available.`,
         buttons: ["OK"],
       });
       return;
@@ -255,7 +255,7 @@ const make = Effect.gen(function* () {
     const { response } = yield* electronDialog.showMessageBox({
       type: "info",
       title: "Update available",
-      message: `T3 Code ${result.release.version} is available.`,
+      message: `${environment.displayName} ${result.release.version} is available.`,
       detail: `You are running ${result.currentVersion}. The app will download the release, verify its SHA256 checksum, replace this application, and reopen it.`,
       buttons: ["Download and Restart", "Later"],
       defaultId: 0,
@@ -272,7 +272,7 @@ const make = Effect.gen(function* () {
       yield* electronDialog.showMessageBox({
         type: "error",
         title: "Update failed",
-        message: "T3 Code could not install the downloaded update.",
+        message: `${environment.displayName} could not install the downloaded update.`,
         detail: installResult.message,
         buttons: ["OK"],
       });
@@ -291,7 +291,7 @@ const make = Effect.gen(function* () {
             return Effect.sync(() => {
               if (!Electron.Notification.isSupported()) return;
               const notification = new Electron.Notification({
-                title: "T3 Code update available",
+                title: `${environment.displayName} update available`,
                 body: `Version ${result.release.version} is ready. Click to download and restart.`,
               });
               notification.once("click", () => {
