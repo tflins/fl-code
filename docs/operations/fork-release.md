@@ -29,7 +29,7 @@ git push origin main
 
 自更新器不会绕过 Gatekeeper 或 Apple 公证。首次从旧版切换到包含自更新器的版本仍需手动安装；如果安装目录不可写，应用会报告错误并继续运行当前版本。保留原应用 ID、应用包文件名和数据目录，用户可见名称为 `FL Code (Nightly)`，切换前备份数据，不要让两份应用同时操作同一数据目录。旧版本可能无法读取新版迁移后的数据库，应用回退与数据恢复应一起考虑。本流程和更新器测试使用隔离临时目录或仓库测试数据库，不访问用户的真实 T3 home。
 
-GitHub 使用 `macos-15` 的 ARM64 runner，发布前还检查实际架构；runner 标签以 [GitHub 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) 为准。Windows、Intel Mac、Linux 和手机打包不在此定制工作流范围内。
+GitHub 使用 `macos-26` 的 ARM64 runner，发布前还检查实际架构；runner 标签以 [GitHub 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) 为准。Windows、Intel Mac、Linux 和手机打包不在此定制工作流范围内。
 
 ## 同步官方
 
