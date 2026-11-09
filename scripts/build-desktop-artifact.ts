@@ -2839,10 +2839,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const displayName = resolveDesktopAppDisplayName(version);
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
+      executableName: displayName,
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
         CFBundleDisplayName: displayName,
+        CFBundleName: displayName,
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:

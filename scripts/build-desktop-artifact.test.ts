@@ -550,11 +550,16 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
       assert.isNull(manualInstall.publish);
       assert.equal(manualInstall.productName, "T3 Code (Nightly)");
-      assert.equal(
-        (manualInstall.mac as { extendInfo: { CFBundleDisplayName: string } }).extendInfo
-          .CFBundleDisplayName,
-        "FL Code (Nightly)",
-      );
+      const macConfig = manualInstall.mac as {
+        executableName: string;
+        extendInfo: {
+          CFBundleDisplayName: string;
+          CFBundleName: string;
+        };
+      };
+      assert.equal(macConfig.executableName, "FL Code (Nightly)");
+      assert.equal(macConfig.extendInfo.CFBundleDisplayName, "FL Code (Nightly)");
+      assert.equal(macConfig.extendInfo.CFBundleName, "FL Code (Nightly)");
 
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
