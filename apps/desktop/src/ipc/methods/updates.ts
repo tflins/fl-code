@@ -7,9 +7,21 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { DesktopUpdateState } from "@t3tools/contracts";
+
+import * as DesktopReleaseUpdates from "../../updates/DesktopReleaseUpdates.ts";
 import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
+
+function presentForkUpdateState(state: DesktopUpdateState): DesktopUpdateState {
+  return {
+    ...state,
+    enabled: true,
+    status: state.status === "disabled" ? "idle" : state.status,
+    message: state.status === "disabled" ? null : state.message,
+  };
+}
 
 export const getUpdateState = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_GET_STATE_CHANNEL,
@@ -17,7 +29,9 @@ export const getUpdateState = DesktopIpc.makeIpcMethod({
   result: DesktopUpdateStateSchema,
   handler: Effect.fn("desktop.ipc.updates.getState")(function* () {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    return yield* updates.getState;
+    const releaseUpdates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
+    const state = yield* updates.getState;
+    return releaseUpdates.supported ? presentForkUpdateState(state) : state;
   }),
 });
 
@@ -63,6 +77,14 @@ export const checkForUpdate = DesktopIpc.makeIpcMethod({
   result: DesktopUpdateCheckResultSchema,
   handler: Effect.fn("desktop.ipc.updates.check")(function* () {
     const updates = yield* DesktopUpdates.DesktopUpdates;
+    const releaseUpdates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
+    if (releaseUpdates.supported) {
+      yield* releaseUpdates.checkAndPrompt;
+      return {
+        checked: true,
+        state: presentForkUpdateState(yield* updates.getState),
+      };
+    }
     return yield* updates.check("web-ui");
   }),
 });
