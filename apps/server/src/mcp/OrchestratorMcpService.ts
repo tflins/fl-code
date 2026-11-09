@@ -1519,7 +1519,7 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(threadManagementFailure));
     const childControls = scopeDelegatedTask(childRecords, task.id);
     const childRun = delegatedTaskRun(childControls, task);
-    const terminalRun = latestTerminalResultRun(childControls, childRun);
+    const terminalRun = latestTerminalResultRun(childRecords, childRun);
     const progress = delegatedTaskProgress(childControls);
     const taskResultRun =
       childRun?.delegatedTaskId === task.id
@@ -1633,7 +1633,8 @@ const make = Effect.gen(function* () {
       childNodeId: task.id,
       status,
       workState,
-      hasPendingChildRuns: hasPendingChildRuns(childProjection, childRun),
+      // Later rounds belong to the thread even though this task's result is scoped.
+      hasPendingChildRuns: hasPendingChildRuns(childRecords, childRun),
       providerInstanceId: modelSelection.instanceId,
       model: modelSelection.model,
       options: modelSelection.options ?? [],
