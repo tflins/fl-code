@@ -18,6 +18,11 @@ import { makeComponentLogger } from "../app/DesktopObservability.ts";
 import { macAppBundlePath } from "../app/macAppBundlePath.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
+import {
+  downloadProgressPercent,
+  openUpdateProgress,
+  type DesktopUpdateProgress,
+} from "./DesktopUpdateProgress.ts";
 import { launchMacUpdate, prepareMacUpdate } from "./forkMacUpdater.ts";
 import {
   FORK_RELEASE_REPOSITORY,
@@ -32,6 +37,7 @@ const STARTUP_DELAY = Duration.seconds(15);
 const POLL_INTERVAL = Duration.hours(6);
 const API_REQUEST_TIMEOUT = Duration.seconds(15);
 const FILE_REQUEST_TIMEOUT = Duration.minutes(5);
+const ARCHIVE_REQUEST_TIMEOUT = Duration.minutes(30);
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 
 type DesktopReleaseUpdateCheckResult =
@@ -96,6 +102,61 @@ const describeCause = (cause: unknown): string => {
   return String(cause);
 };
 
+const formatMegabytes = (bytes: number): string => `${Math.round(bytes / 1024 / 1024)} MB`;
+
+async function downloadReleaseArchive(
+  release: ForkRelease,
+  progress: DesktopUpdateProgress,
+): Promise<Uint8Array> {
+  const response = await Electron.net.fetch(release.zipUrl, {
+    headers: {
+      accept: "application/octet-stream",
+      "user-agent": "t3code-fork-release-updater",
+    },
+    redirect: "follow",
+    signal: AbortSignal.timeout(Duration.toMillis(ARCHIVE_REQUEST_TIMEOUT)),
+  });
+  if (!response.ok) {
+    throw new Error(`Release archive download returned HTTP ${response.status}.`);
+  }
+  if (response.body === null) {
+    throw new Error("Release archive download returned an empty response body.");
+  }
+
+  const bytes = new Uint8Array(release.zipSize);
+  const reader = response.body.getReader();
+  let receivedBytes = 0;
+  let lastReportedPercent = -1;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (receivedBytes + chunk.value.byteLength > bytes.byteLength) {
+        throw new Error("The downloaded update is larger than its release metadata.");
+      }
+      bytes.set(chunk.value, receivedBytes);
+      receivedBytes += chunk.value.byteLength;
+
+      const percent = downloadProgressPercent(receivedBytes, bytes.byteLength);
+      if (percent !== lastReportedPercent) {
+        lastReportedPercent = percent;
+        await progress.update({
+          phase: "downloading",
+          percent: Math.floor(percent * 0.9),
+          detail: `${formatMegabytes(receivedBytes)} of ${formatMegabytes(bytes.byteLength)} (${percent}%)`,
+        });
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (receivedBytes !== bytes.byteLength) {
+    throw new Error("The downloaded update size does not match the release metadata.");
+  }
+  return bytes;
+}
+
 const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;
@@ -158,6 +219,7 @@ const make = Effect.gen(function* () {
 
   const installRelease = Effect.fn("DesktopReleaseUpdates.installRelease")(function* (
     release: ForkRelease,
+    progress: DesktopUpdateProgress,
   ) {
     return yield* Effect.gen(function* () {
       if (release.zipSize > MAX_ARCHIVE_BYTES) {
@@ -181,20 +243,28 @@ const make = Effect.gen(function* () {
             cause,
           }),
       });
-      const zipBytes = yield* executeRequest(
-        release.zipUrl,
-        "application/octet-stream",
-        FILE_REQUEST_TIMEOUT,
-      ).pipe(
-        Effect.flatMap((response) => response.arrayBuffer),
-        Effect.map((body) => new Uint8Array(body)),
+      yield* Effect.promise(() =>
+        progress.update({
+          phase: "downloading",
+          percent: 0,
+          detail: "Connecting to GitHub…",
+        }),
       );
-      if (zipBytes.byteLength !== release.zipSize) {
-        return yield* new ForkReleaseInstallError({
-          stage: "download-size validation",
-          cause: new Error("The downloaded update size does not match the release metadata."),
-        });
-      }
+      const zipBytes = yield* Effect.tryPromise({
+        try: () => downloadReleaseArchive(release, progress),
+        catch: (cause) =>
+          new ForkReleaseInstallError({
+            stage: "release archive download",
+            cause,
+          }),
+      });
+      yield* Effect.promise(() =>
+        progress.update({
+          phase: "verifying",
+          percent: 95,
+          detail: "Verifying SHA256 and preparing installation…",
+        }),
+      );
 
       const appBundlePath = macAppBundlePath(process.execPath);
       if (appBundlePath === undefined) {
@@ -209,6 +279,13 @@ const make = Effect.gen(function* () {
           expectedSha256,
           expectedVersion: release.version,
           zipBytes,
+        }),
+      );
+      yield* Effect.promise(() =>
+        progress.update({
+          phase: "restarting",
+          percent: 99,
+          detail: "Restarting FL Code…",
         }),
       );
       yield* logInfo("prepared fork release update", {
@@ -269,8 +346,17 @@ const make = Effect.gen(function* () {
       currentVersion: result.currentVersion,
       latestVersion: result.release.version,
     });
-    const installResult = yield* installRelease(result.release);
+    const progress = yield* Effect.promise(() => openUpdateProgress(result.release.version));
+    yield* Effect.promise(() =>
+      progress.update({
+        phase: "downloading",
+        percent: 0,
+        detail: "Preparing download…",
+      }),
+    );
+    const installResult = yield* installRelease(result.release, progress);
     if (installResult.status === "error") {
+      progress.close();
       yield* electronDialog.showMessageBox({
         type: "error",
         title: "Update failed",
