@@ -36,6 +36,7 @@ export async function openUpdateProgress(version: string): Promise<DesktopUpdate
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
+      closable: false,
       title: `Updating FL Code to ${version}`,
       backgroundColor: "#111111",
       webPreferences: {
@@ -68,6 +69,7 @@ export async function openUpdateProgress(version: string): Promise<DesktopUpdate
       fail: async (detail) => {
         if (progressWindow.isDestroyed()) return false;
         try {
+          progressWindow.setClosable(true);
           await progressWindow.webContents.executeJavaScript(
             `window.failUpdateProgress(${JSON.stringify(detail)})`,
           );

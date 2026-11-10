@@ -108,6 +108,7 @@ async function downloadReleaseArchive(
   release: ForkRelease,
   progress: DesktopUpdateProgress,
 ): Promise<Uint8Array> {
+  // Chromium's network stack honors the same system proxy as the app UI.
   const response = await Electron.net.fetch(release.zipUrl, {
     headers: {
       accept: "application/octet-stream",
