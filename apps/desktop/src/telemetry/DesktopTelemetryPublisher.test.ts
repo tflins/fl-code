@@ -148,12 +148,17 @@ describe("DesktopRendererHistory", () => {
           },
         });
         const preview = Object.assign(new NodeEvents.EventEmitter(), {
-          id: 2,
           getOSProcessId: () => previewPid,
           isDestroyed: () => previewDestroyed,
           getURL: () => {
             urlReads += 1;
             return "https://private.invalid/preview?secret=private";
+          },
+        });
+        Object.defineProperty(preview, "id", {
+          get() {
+            if (previewDestroyed) throw new TypeError("Object has been destroyed");
+            return 2;
           },
         });
         const metrics = [7_001, 7_002].map(

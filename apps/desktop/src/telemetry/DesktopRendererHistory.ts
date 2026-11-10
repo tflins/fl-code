@@ -61,6 +61,7 @@ interface RendererRecord {
 
 interface TrackedRenderer {
   readonly webContents: Electron.WebContents;
+  readonly webContentsId: number;
   identity: RendererIdentity;
   pid: number | null;
   creationTimeMs: number | null;
@@ -147,7 +148,7 @@ const make = Effect.fn("DesktopRendererHistory.make")(function* () {
       mainSessionStartedAtUnixMs,
       timestampUnixMs: clock.currentTimeMillisUnsafe(),
       event,
-      webContentsId: renderer.webContents.id,
+      webContentsId: renderer.webContentsId,
       ...renderer.identity,
       rendererPid: renderer.pid,
       rendererPidSource,
@@ -208,11 +209,12 @@ const make = Effect.fn("DesktopRendererHistory.make")(function* () {
       };
       const onDestroyed = () => {
         record(renderer, "destroyed");
-        active.delete(webContents.id);
+        active.delete(renderer.webContentsId);
         renderer.removeListeners();
       };
       const renderer: TrackedRenderer = {
         webContents,
+        webContentsId: webContents.id,
         identity: boundedIdentity,
         pid: null,
         creationTimeMs: null,
