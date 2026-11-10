@@ -1,6 +1,10 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { releaseVersion, automaticReleaseTag } = require("./fork-release.cjs");
+const {
+  nextAutomaticReleaseTag,
+  releaseVersion,
+  verificationVersion,
+} = require("./fork-release.cjs");
 
 test("accepts a fork revision based on the pinned upstream nightly", () => {
   assert.equal(
@@ -30,19 +34,34 @@ test("rejects official tags, malformed revisions and mismatched nightly bases", 
   }
 });
 
-test("assigns a distinct fork version to each workflow run", () => {
+test("increments from published releases for the pinned upstream nightly", () => {
+  const upstreamTag = "v0.1.8-nightly.20261108.4367";
   assert.equal(
-    automaticReleaseTag("v0.1.8-nightly.20261108.4367", "12"),
-    "tflins-v0.1.8-nightly.20261108.4367-tflins.12",
+    nextAutomaticReleaseTag(upstreamTag, [
+      "tflins-v0.1.8-nightly.20261108.4367-tflins.4",
+      "tflins-v0.1.8-nightly.20261108.4367-tflins.12",
+      "tflins-v0.1.9-nightly.20261108.4368-tflins.99",
+      "v0.1.8-nightly.20261108.4367",
+    ]),
+    "tflins-v0.1.8-nightly.20261108.4367-tflins.13",
   );
   assert.equal(
-    automaticReleaseTag("v0.1.9-nightly.20261108.4368", "13"),
-    "tflins-v0.1.9-nightly.20261108.4368-tflins.13",
+    nextAutomaticReleaseTag("v0.1.9-nightly.20261108.4368", [
+      "tflins-v0.1.8-nightly.20261108.4367-tflins.12",
+    ]),
+    "tflins-v0.1.9-nightly.20261108.4368-tflins.1",
   );
-  for (const invalid of [undefined, "0", "1\n", "abc"]) {
-    assert.throws(() => automaticReleaseTag("v0.1.8-nightly.20261108.4367", invalid));
-  }
   for (const upstream of ["main", "v0.1.7", "v0.1.8-nightly.20261108.4367\n"]) {
-    assert.throws(() => automaticReleaseTag(upstream, "12"));
+    assert.throws(() => nextAutomaticReleaseTag(upstream, []));
+  }
+});
+
+test("uses a source-bound version for build-only verification", () => {
+  assert.equal(
+    verificationVersion("v0.1.8-nightly.20261108.4367", "0123456789abcdef0123456789abcdef01234567"),
+    "0.1.8-nightly.20261108.4367-tflins.verify.0123456789ab",
+  );
+  for (const sha of [undefined, "", "main", "0123456\n"]) {
+    assert.throws(() => verificationVersion("v0.1.8-nightly.20261108.4367", sha));
   }
 });

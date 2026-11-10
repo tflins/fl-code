@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tflins-vX.Y.Z-nightly.YYYYMMDD.B-tflins.N tag on origin/main"
-        required: true
+        description: "Optional existing tflins-v* tag; leave empty to use the next published revision"
+        required: false
         type: string
       publish:
-        description: "Publish after verification (otherwise save Actions artifacts only)"
+        description: "Publish after local verification and CI checks (otherwise save Actions artifacts only)"
         default: false
         type: boolean
 
@@ -31,7 +31,7 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+      EXPLICIT_RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
       T3CODE_DESKTOP_UPDATE_REPOSITORY: tflins/t3code
       # The fork updater replaces verified ZIPs itself; keep electron-updater feeds disabled.
       T3CODE_DESKTOP_DISABLE_UPDATE_FEED: "true"
@@ -51,13 +51,30 @@ jobs:
           git sparse-checkout set --no-cone '/*' '!/.repos/'
           git checkout --detach "$CHECKOUT_REF"
 
+      - name: Prepare release metadata
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUBLISH: ${{ inputs.publish || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$EXPLICIT_RELEASE_TAG" ]]; then
+            node .github/scripts/fork-release.cjs metadata "$EXPLICIT_RELEASE_TAG"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$PUBLISH" == "true" ]]; then
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq '.[] | select(.draft == false) | .tag_name' \
+              > "$RUNNER_TEMP/published-release-tags.txt"
+            release_tag=$(node .github/scripts/fork-release.cjs next-tag "$RUNNER_TEMP/published-release-tags.txt")
+            node .github/scripts/fork-release.cjs metadata "$release_tag"
+          else
+            node .github/scripts/fork-release.cjs verification-metadata "$GITHUB_SHA"
+          fi
+
       - name: Validate release source
         run: |
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
-          node .github/scripts/fork-release.cjs metadata "$RELEASE_TAG"
-          if [[ -n "$RELEASE_TAG" ]]; then
-            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          if [[ -n "$EXPLICIT_RELEASE_TAG" ]]; then
+            test "$(git rev-parse "refs/tags/$EXPLICIT_RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
           fi
           upstream_tag=$(node -p "require('./.github/fork-release.json').upstreamTag")
           git fetch https://github.com/pingdotgg/t3code.git "refs/tags/$upstream_tag"
@@ -104,7 +121,7 @@ jobs:
           node scripts/smoke-desktop-app.ts \
             --executable "$app/Contents/MacOS/T3 Code (Nightly)" \
             --artifacts-dir "$RUNNER_TEMP/fork-launch-check"
-          node .github/scripts/fork-release.cjs checksums "$RELEASE_TAG" release-fork
+          node .github/scripts/fork-release.cjs checksums "$RELEASE_VERSION" release-fork
           (cd release-fork && shasum -a 256 -c SHA256SUMS)
 
       - name: Save verification evidence
@@ -126,7 +143,9 @@ jobs:
           if-no-files-found: error
 
       - name: Publish verified release
-        if: github.event_name == 'push' || inputs.publish
+        if: >-
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/tflins-v')) ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish)
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -134,7 +153,7 @@ jobs:
           if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/existing-release.json" 2>/dev/null; then
             node -e "if (!require(process.argv[1]).isDraft) throw new Error('Refusing to replace a published release')" "$RUNNER_TEMP/existing-release.json"
           else
-            printf 'FL Code Nightly %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用本仓库的构建序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证。安装本次版本后，可使用应用内“检查更新”从 GitHub 下载并校验后续 ZIP，然后自动替换并重启。首次切换到支持更新的版本仍需手动安装。\n\n保留原应用 ID、应用包文件名和数据目录，仅将用户可见名称改为 FL Code。切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
+            printf 'FL Code Nightly %s\n\n源码提交：%s\n\n上游每夜版：https://github.com/pingdotgg/t3code/releases/tag/%s\n完整保留上游版本号；后缀 -tflins.N 使用同一上游基线已发布版本的下一个连续序号。\n\n提供 macOS Apple Silicon DMG、ZIP 和 SHA256SUMS。未配置 Apple Developer ID 签名与公证。安装本次版本后，可使用应用内“检查更新”从 GitHub 下载并校验后续 ZIP，然后自动替换并重启。首次切换到支持更新的版本仍需手动安装。\n\n保留原应用 ID、应用包文件名和数据目录，仅将用户可见名称改为 FL Code。切换前请备份现有数据，不要同时运行两份应用操作同一数据目录。\n' "$RELEASE_VERSION" "$RELEASE_SHA" "$UPSTREAM_NIGHTLY_TAG" > "$RUNNER_TEMP/fork-release-notes.md"
             gh release create "$RELEASE_TAG" --target "$RELEASE_SHA" --draft \
               --title "FL Code Nightly $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
           fi

@@ -25,11 +25,23 @@ function releaseVersion(tag, upstreamTag) {
   return version;
 }
 
-function automaticReleaseTag(upstreamTag, runNumber) {
-  if (!/^[1-9]\d*$/.test(String(runNumber))) throw new Error("Invalid workflow run number");
-  const tag = `tflins-v${upstreamNightlyVersion(upstreamTag)}-tflins.${runNumber}`;
+function nextAutomaticReleaseTag(upstreamTag, existingTags) {
+  const prefix = `tflins-v${upstreamNightlyVersion(upstreamTag)}-tflins.`;
+  let latestRevision = 0;
+  for (const tag of existingTags) {
+    if (typeof tag !== "string" || !tag.startsWith(prefix)) continue;
+    const revision = tag.slice(prefix.length);
+    if (!/^[1-9]\d*$/.test(revision)) continue;
+    latestRevision = Math.max(latestRevision, Number(revision));
+  }
+  const tag = `${prefix}${latestRevision + 1}`;
   releaseVersion(tag, upstreamTag);
   return tag;
+}
+
+function verificationVersion(upstreamTag, sha) {
+  if (!/^[0-9a-f]{7,40}$/i.test(sha)) throw new Error("Invalid source commit");
+  return `${upstreamNightlyVersion(upstreamTag)}-tflins.verify.${sha.toLowerCase().slice(0, 12)}`;
 }
 
 function writeChecksums(directory, version) {
@@ -42,21 +54,38 @@ function writeChecksums(directory, version) {
   fs.writeFileSync(path.join(directory, "SHA256SUMS"), `${lines.join("\n")}\n`);
 }
 
-module.exports = { releaseVersion, automaticReleaseTag, writeChecksums };
+module.exports = {
+  nextAutomaticReleaseTag,
+  releaseVersion,
+  verificationVersion,
+  writeChecksums,
+};
 
 if (require.main === module) {
-  const [operation, requestedTag, directory] = process.argv.slice(2);
+  const [operation, argument, directory] = process.argv.slice(2);
   const { upstreamTag } = JSON.parse(fs.readFileSync(".github/fork-release.json", "utf8"));
-  const tag = requestedTag || automaticReleaseTag(upstreamTag, process.env.GITHUB_RUN_NUMBER);
-  const version = releaseVersion(tag, upstreamTag);
   if (operation === "metadata") {
+    if (!argument) throw new Error("Release metadata requires an explicit tag");
+    const version = releaseVersion(argument, upstreamTag);
     fs.appendFileSync(
       process.env.GITHUB_ENV,
-      `RELEASE_VERSION=${version}\nRELEASE_TAG=${tag}\nUPSTREAM_NIGHTLY_TAG=${upstreamTag}\n`,
+      `RELEASE_VERSION=${version}\nRELEASE_TAG=${argument}\nUPSTREAM_NIGHTLY_TAG=${upstreamTag}\n`,
     );
   } else if (operation === "checksums" && directory) {
-    writeChecksums(directory, version);
+    if (!argument) throw new Error("Checksums require an explicit version");
+    writeChecksums(directory, argument);
+  } else if (operation === "next-tag" && argument) {
+    const existingTags = fs.readFileSync(argument, "utf8").split(/\r?\n/).filter(Boolean);
+    process.stdout.write(`${nextAutomaticReleaseTag(upstreamTag, existingTags)}\n`);
+  } else if (operation === "verification-metadata") {
+    const version = verificationVersion(upstreamTag, argument || process.env.GITHUB_SHA);
+    fs.appendFileSync(
+      process.env.GITHUB_ENV,
+      `RELEASE_VERSION=${version}\nUPSTREAM_NIGHTLY_TAG=${upstreamTag}\n`,
+    );
   } else {
-    throw new Error("Usage: fork-release.cjs <metadata|checksums> <tag> [directory]");
+    throw new Error(
+      "Usage: fork-release.cjs <metadata|verification-metadata|next-tag|checksums> <argument> [directory]",
+    );
   }
 }
