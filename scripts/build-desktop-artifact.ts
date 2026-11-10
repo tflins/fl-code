@@ -2762,9 +2762,11 @@ export function resolveDesktopProductName(
   version: string,
   platform: typeof BuildPlatform.Type,
 ): string {
-  return platform === "mac" && resolveDesktopUpdateChannel(version) === "nightly"
-    ? "FL Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+  if (resolveDesktopUpdateChannel(version) !== "nightly") {
+    return desktopPackageJson.productName ?? "T3 Code";
+  }
+
+  return platform === "mac" ? "FL Code (Nightly)" : "T3 Code (Nightly)";
 }
 
 export function resolveDesktopAppDisplayName(version: string): string {

@@ -79,10 +79,11 @@ const decodePackageVersion = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Struct({ version: Schema.String })),
 );
 
-it("keeps fork verification builds on the nightly product identity", () => {
+it("uses the FL Code identity on macOS and keeps T3 Code (Nightly) elsewhere", () => {
   const version = "0.1.8-nightly.20261109.4399-tflins.verify.7fc0a001bb97";
   assert.strictEqual(resolveDesktopProductName(version, "mac"), "FL Code (Nightly)");
-  assert.strictEqual(resolveDesktopProductName(version, "win"), "T3 Code (Beta)");
+  assert.strictEqual(resolveDesktopProductName(version, "win"), "T3 Code (Nightly)");
+  assert.strictEqual(resolveDesktopProductName(version, "linux"), "T3 Code (Nightly)");
   assert.strictEqual(resolveDesktopAppDisplayName(version), "FL Code (Nightly)");
 });
 
