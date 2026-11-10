@@ -30,7 +30,7 @@ const verifyWindowsDesktopArtifactCli = Command.make("verify-windows-desktop-art
     Effect.gen(function* () {
       yield* verifyWindowsPackagedRuntime({
         packagedAppDir: appDir,
-        appExecutableName: `${resolveDesktopProductName(buildVersion)}.exe`,
+        appExecutableName: `${resolveDesktopProductName(buildVersion, "win")}.exe`,
         targetArch: arch,
         verbose,
       });

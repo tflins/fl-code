@@ -11,6 +11,7 @@ const STALE_UPDATE_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface PreparedMacUpdate {
   readonly appBundlePath: string;
+  readonly destinationAppPath: string;
   readonly scriptPath: string;
   readonly stagedAppPath: string;
   readonly workDirectory: string;
@@ -43,12 +44,10 @@ export async function prepareMacUpdate(input: PrepareMacUpdateInput): Promise<Pr
     const extractedDirectory = NodePath.join(workDirectory, "extracted");
     await runFile("/usr/bin/ditto", ["-x", "-k", zipPath, extractedDirectory]);
 
-    const appName = NodePath.basename(input.appBundlePath);
-    const stagedAppPath = NodePath.join(extractedDirectory, appName);
+    const stagedAppPath = await findExtractedAppBundle(extractedDirectory);
     const infoPlistPath = NodePath.join(stagedAppPath, "Contents", "Info.plist");
     const version = await readPlistValue(infoPlistPath, "CFBundleShortVersionString");
-    const identifier = await readPlistValue(infoPlistPath, "CFBundleIdentifier");
-    if (version !== input.expectedVersion || identifier !== FORK_BUNDLE_IDENTIFIER) {
+    if (version !== input.expectedVersion) {
       throw new Error("The downloaded application identity does not match this fork release.");
     }
 
@@ -74,6 +73,7 @@ export async function prepareMacUpdate(input: PrepareMacUpdateInput): Promise<Pr
 
     return {
       appBundlePath: input.appBundlePath,
+      destinationAppPath: NodePath.join(parentDirectory, NodePath.basename(stagedAppPath)),
       scriptPath,
       stagedAppPath,
       workDirectory,
@@ -92,6 +92,7 @@ export async function launchMacUpdate(update: PreparedMacUpdate): Promise<void> 
         update.scriptPath,
         String(process.pid),
         update.appBundlePath,
+        update.destinationAppPath,
         update.stagedAppPath,
         update.workDirectory,
       ],
@@ -106,6 +107,29 @@ export async function launchMacUpdate(update: PreparedMacUpdate): Promise<void> 
       resolve();
     });
   });
+}
+
+async function findExtractedAppBundle(extractedDirectory: string): Promise<string> {
+  const entries = await NodeFSP.readdir(extractedDirectory, { withFileTypes: true });
+  const matches: string[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".app")) continue;
+
+    const candidate = NodePath.join(extractedDirectory, entry.name);
+    const identifier = await readPlistValue(
+      NodePath.join(candidate, "Contents", "Info.plist"),
+      "CFBundleIdentifier",
+    ).catch(() => undefined);
+    if (identifier === FORK_BUNDLE_IDENTIFIER) {
+      matches.push(candidate);
+    }
+  }
+
+  if (matches.length !== 1) {
+    throw new Error("The downloaded archive must contain exactly one FL Code application.");
+  }
+  return matches[0]!;
 }
 
 async function readPlistValue(infoPlistPath: string, key: string): Promise<string> {
@@ -160,22 +184,36 @@ set -u
 
 pid="$1"
 target="$2"
-staged="$3"
-work="$4"
+destination="$3"
+staged="$4"
+work="$5"
 backup="$work/previous.app"
+failed="$work/failed.app"
 log="$work/install.log"
 
 exec >>"$log" 2>&1
 
+open_app() {
+  "\${T3CODE_UPDATE_OPEN:-/usr/bin/open}" "$1" >/dev/null 2>&1
+}
+
+notify_failure() {
+  if [ "\${T3CODE_UPDATE_SKIP_NOTIFICATION:-}" = "1" ]; then
+    return
+  fi
+  /usr/bin/osascript -e 'display notification "The previous version was restored." with title "FL Code update failed"' >/dev/null 2>&1 || true
+}
+
 fail() {
   if [ -e "$backup" ]; then
-    if [ -e "$target" ]; then
-      /bin/mv "$target" "$work/failed.app" || true
+    if [ -e "$destination" ]; then
+      /bin/rm -rf "$failed"
+      /bin/mv "$destination" "$failed" || true
     fi
     /bin/mv "$backup" "$target" || true
   fi
-  /usr/bin/open "$target" >/dev/null 2>&1 || true
-  /usr/bin/osascript -e 'display notification "The previous version was restored." with title "App update failed"' >/dev/null 2>&1 || true
+  open_app "$target" || true
+  notify_failure
   exit 1
 }
 
@@ -188,7 +226,10 @@ while /bin/kill -0 "$pid" 2>/dev/null; do
   waited=$((waited + 1))
 done
 
+if [ "$destination" != "$target" ] && [ -e "$destination" ]; then
+  fail
+fi
 /bin/mv "$target" "$backup" || fail
-/bin/mv "$staged" "$target" || fail
-/usr/bin/open "$target" >/dev/null 2>&1 || fail
+/bin/mv "$staged" "$destination" || fail
+open_app "$destination" || fail
 `;
