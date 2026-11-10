@@ -44,7 +44,11 @@ try {
   app = await _electron.launch({
     executablePath: executable,
     // Linux CI runners do not allow the Chromium sandbox's user namespaces.
-    args: [...(values.app ? [NodePath.resolve(values.app)] : []), "--no-sandbox"],
+    args: [
+      ...(values.app ? [NodePath.resolve(values.app)] : []),
+      // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone release smoke has no Effect runtime.
+      ...(process.platform === "linux" ? ["--no-sandbox"] : []),
+    ],
     // HOME stays real: on macOS a fake HOME has no login keychain, and safeStorage blocks the
     // main process on a keychain dialog. macOS keeps its Electron profile in the runner's HOME.
     env: {
