@@ -30,7 +30,7 @@ export async function openUpdateProgress(version: string): Promise<DesktopUpdate
   try {
     window = new Electron.BrowserWindow({
       width: 480,
-      height: 220,
+      height: 260,
       show: false,
       resizable: false,
       minimizable: false,
