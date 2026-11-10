@@ -80,6 +80,8 @@ type DesktopReleaseUpdatesRuntimeServices =
 
 const { logInfo, logWarning } = makeComponentLogger("desktop-release-updates");
 
+export const followReleaseRedirects = HttpClient.followRedirects();
+
 const describeCause = (cause: unknown): string => {
   if (Cause.isCause(cause)) {
     return cause.reasons
@@ -98,7 +100,7 @@ const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;
   const electronDialog = yield* ElectronDialog.ElectronDialog;
-  const httpClient = yield* HttpClient.HttpClient;
+  const httpClient = followReleaseRedirects(yield* HttpClient.HttpClient);
   const lastNotifiedVersion = yield* Ref.make(Option.none<string>());
   const actionSemaphore = yield* Semaphore.make(1);
   const runtimeContext = yield* Effect.context<DesktopReleaseUpdatesRuntimeServices>();
