@@ -356,14 +356,16 @@ const make = Effect.gen(function* () {
     );
     const installResult = yield* installRelease(result.release, progress);
     if (installResult.status === "error") {
-      progress.close();
-      yield* electronDialog.showMessageBox({
-        type: "error",
-        title: "Update failed",
-        message: `${environment.displayName} could not install the downloaded update.`,
-        detail: installResult.message,
-        buttons: ["OK"],
-      });
+      const failureShown = yield* Effect.promise(() => progress.fail(installResult.message));
+      if (!failureShown) {
+        yield* electronDialog.showMessageBox({
+          type: "error",
+          title: "Update failed",
+          message: `${environment.displayName} could not install the downloaded update.`,
+          detail: installResult.message,
+          buttons: ["OK"],
+        });
+      }
     }
   }).pipe(Effect.catchCause((cause) => logWarning("fork updater UI failed", { cause })));
 

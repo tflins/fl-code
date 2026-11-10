@@ -9,13 +9,13 @@ export interface UpdateProgressState {
 }
 
 export interface DesktopUpdateProgress {
-  readonly update: (state: UpdateProgressState) => Promise<void>;
-  readonly close: () => void;
+  readonly update: (state: UpdateProgressState) => Promise<boolean>;
+  readonly fail: (detail: string) => Promise<boolean>;
 }
 
 const NOOP_PROGRESS: DesktopUpdateProgress = {
-  update: async () => undefined,
-  close: () => undefined,
+  update: async () => false,
+  fail: async () => false,
 };
 
 export function downloadProgressPercent(receivedBytes: number, totalBytes: number): number {
@@ -55,17 +55,26 @@ export async function openUpdateProgress(version: string): Promise<DesktopUpdate
 
     return {
       update: async (state) => {
-        if (progressWindow.isDestroyed()) return;
+        if (progressWindow.isDestroyed()) return false;
         try {
           await progressWindow.webContents.executeJavaScript(
             `window.updateUpdateProgress(${JSON.stringify(state)})`,
           );
+          return true;
         } catch {
-          // Progress reporting must never interrupt the update.
+          return false;
         }
       },
-      close: () => {
-        if (!progressWindow.isDestroyed()) progressWindow.destroy();
+      fail: async (detail) => {
+        if (progressWindow.isDestroyed()) return false;
+        try {
+          await progressWindow.webContents.executeJavaScript(
+            `window.failUpdateProgress(${JSON.stringify(detail)})`,
+          );
+          return true;
+        } catch {
+          return false;
+        }
       },
     };
   } catch {
@@ -90,19 +99,22 @@ function updateProgressHtml(version: string): string {
     h1 { margin: 0 0 8px; font-size: 18px; line-height: 1.3; }
     p { margin: 0; color: #b8b8b8; font-size: 13px; line-height: 1.5; }
     progress { width: 100%; height: 10px; margin: 22px 0 10px; accent-color: #3b82f6; }
+    progress.failed { accent-color: #ef4444; }
     .meta { display: flex; justify-content: space-between; gap: 16px; }
     #percent { color: #f5f5f5; font-variant-numeric: tabular-nums; }
+    button { margin-top: 18px; padding: 7px 16px; float: right; border: 0; border-radius: 6px; background: #f5f5f5; color: #171717; font: inherit; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Updating FL Code</h1>
-    <p>${escapeHtml(version)}</p>
+    <h1 id="title">Updating FL Code</h1>
+    <p id="version">${escapeHtml(version)}</p>
     <progress id="bar" max="100" value="0"></progress>
     <div class="meta">
       <p id="detail">Preparing download…</p>
       <p id="percent">0%</p>
     </div>
+    <button id="close" type="button" hidden onclick="window.close()">Close</button>
   </main>
   <script>
     window.updateUpdateProgress = (state) => {
@@ -110,6 +122,13 @@ function updateProgressHtml(version: string): string {
       document.getElementById("bar").value = percent;
       document.getElementById("percent").textContent = percent + "%";
       document.getElementById("detail").textContent = state.detail;
+    };
+    window.failUpdateProgress = (detail) => {
+      document.getElementById("title").textContent = "Update failed";
+      document.getElementById("version").textContent = "The update did not complete.";
+      document.getElementById("detail").textContent = detail;
+      document.getElementById("bar").classList.add("failed");
+      document.getElementById("close").hidden = false;
     };
   </script>
 </body>
