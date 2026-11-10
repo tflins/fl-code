@@ -1308,6 +1308,7 @@ describe("UsageService", () => {
           );
         });
         yield* Effect.gen(function* () {
+          const expectedDir = yield* Effect.promise(() => NodeFSP.realpath(dir));
           const service = yield* UsageService.make;
           const summary = yield* service.readSummary(WINDOW);
           const pi = summary.buckets.filter((bucket) => bucket.provider === "pi");
@@ -1316,7 +1317,7 @@ describe("UsageService", () => {
           assert.strictEqual(
             summary.sources.find((source) => source.fingerprint.provider === "pi")?.fingerprint
               .resolvedHomePath,
-            dir,
+            expectedDir,
           );
         }).pipe(
           Effect.scoped,
@@ -1580,6 +1581,8 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
       const cursor = makeFakeCursor();
+      let inFlight = 0;
+      let mostInFlight = 0;
       const started = yield* Deferred.make<void>();
       const gate = yield* Deferred.make<void>();
       yield* Effect.gen(function* () {
@@ -1587,17 +1590,28 @@ describe("UsageService", () => {
           layerCursorUsageAccounts(
             Layer.succeed(CursorAccountReader.CursorAccountReader, {
               read: (credential, sinceMs, untilMs) =>
-                (credential as { apiKey?: string }).apiKey === "failing-key"
-                  ? Effect.succeed({
+                Effect.gen(function* () {
+                  inFlight++;
+                  mostInFlight = Math.max(mostInFlight, inFlight);
+                  if (credential.apiKey === "failing-key") {
+                    yield* Deferred.await(started);
+                    return {
                       accountKey: null,
                       records: [],
                       missing: false,
                       error: "Cursor account usage could not be read.",
-                    })
-                  : Deferred.succeed(started, undefined).pipe(
-                      Effect.andThen(Deferred.await(gate)),
-                      Effect.andThen(cursor.read(credential, sinceMs, untilMs)),
-                    ),
+                    };
+                  }
+                  yield* Deferred.succeed(started, undefined);
+                  yield* Deferred.await(gate);
+                  return yield* cursor.read(credential, sinceMs, untilMs);
+                }).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      inFlight--;
+                    }),
+                  ),
+                ),
             }),
           ),
         );
@@ -1613,6 +1627,14 @@ describe("UsageService", () => {
                 instanceId: ProviderInstanceId.make("cursor-work"),
                 environment: { CURSOR_API_KEY: "new-key" },
               },
+              {
+                instanceId: ProviderInstanceId.make("cursor-third"),
+                environment: { CURSOR_API_KEY: "third-key" },
+              },
+              {
+                instanceId: ProviderInstanceId.make("cursor-fourth"),
+                environment: { CURSOR_API_KEY: "fourth-key" },
+              },
             ],
             windowStartMs: 0,
             retentionCutoffMs: 0,
@@ -1624,6 +1646,8 @@ describe("UsageService", () => {
         assert.isTrue(sources.some((source) => source.refreshing === true));
         yield* Deferred.succeed(gate, undefined);
         yield* Fiber.join(first);
+        assert.strictEqual(mostInFlight, 2);
+        assert.strictEqual(inFlight, 0);
       }).pipe(
         Effect.provide(
           layerService({
@@ -2432,6 +2456,7 @@ describe("UsageService", () => {
           await NodeFSP.writeFile(transcript, content);
         });
         yield* Effect.gen(function* () {
+          const expectedTranscript = yield* Effect.promise(() => NodeFSP.realpath(transcript));
           const verify = (
             summary: UsageSummary,
             output: number,
@@ -2456,14 +2481,14 @@ describe("UsageService", () => {
           yield* Effect.addFinalizer(() => Effect.sync(() => open.mockRestore()));
           const first = yield* UsageService.make;
           const cold = yield* first.readSummary(WINDOW);
-          assert.isTrue(open.mock.calls.some(([path]) => path === transcript));
+          assert.isTrue(open.mock.calls.some(([path]) => path === expectedTranscript));
           verify(cold, 20, 20, 1);
           yield* first.awaitPersisted;
           const restarted = yield* UsageService.make;
           open.mockClear();
           verify(yield* first.readSummary(WINDOW), 20, 20, 1);
           verify(yield* restarted.readSummary(WINDOW), 20, 20, 1);
-          assert.isFalse(open.mock.calls.some(([path]) => path === transcript));
+          assert.isFalse(open.mock.calls.some(([path]) => path === expectedTranscript));
           open.mockRestore();
 
           const append = "\n" + counted(10, 2, 140, 30) + "\n";
