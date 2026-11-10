@@ -15,6 +15,10 @@ describe("cliRelease", () => {
     expect(cliReleaseChannelOf(fork)).toBe("nightly");
     expect(crossesReleaseTrack(upstream, fork)).toBe(false);
     expect(crossesReleaseTrack("0.1.7", fork)).toBe(true);
+
+    const verification = `${upstream}-tflins.verify.0123456789ab`;
+    expect(cliReleaseChannelOf(verification)).toBe("nightly");
+    expect(crossesReleaseTrack(upstream, verification)).toBe(false);
   });
   it("parses sha256sum output including binary-mode markers", () => {
     const checksums = parseChecksums(
