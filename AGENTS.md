@@ -1,5 +1,14 @@
 # T3 Code
 
+## Fork 维护约定
+
+本仓库是 [`tflins/t3code`](https://github.com/tflins/t3code)，上游为 [`pingdotgg/t3code`](https://github.com/pingdotgg/t3code)。本节记录定制版的维护约定，后续章节保留上游开发说明。
+
+- 现有定制包括 macOS 桌面应用名称 `FL Code (Nightly)`、独立发布与自更新，以及子 Agent 交接记录。交接记录目前覆盖 T3 应用管理的委派任务（`app_owned`），provider 原生子 Agent 的覆盖范围需单独核对。
+- 上游基线由 [`.github/fork-release.json`](.github/fork-release.json) 固定到已发布的 Nightly 标签。同步采用合并该标签的方式，保留并复核定制行为；不得通过重置或强制覆盖自己的主线同步。
+- 版本、构建、发布、安装限制和上游同步流程见[定制版桌面发布](docs/operations/fork-release.md)。推送 `main` 默认触发构建验证；正式发布需单独授权并手动启用发布或推送定制发布标签。
+- 个人 `development-delivery-t3` skill 和机器上的 Tailscale、DNS、代理配置在仓库外维护，不随产品代码发布。
+
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity, Kiro) and serves web, desktop, and mobile clients.
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
