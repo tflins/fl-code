@@ -69,6 +69,8 @@ class ForkReleaseInstallError extends Schema.TaggedError<ForkReleaseInstallError
   }
 }
 
+const isForkReleaseInstallError = Schema.is(ForkReleaseInstallError);
+
 export class DesktopReleaseUpdates extends Context.Service<
   DesktopReleaseUpdates,
   {
@@ -98,6 +100,9 @@ const describeCause = (cause: unknown): string => {
       })
       .join("; ");
   }
+  if (isForkReleaseInstallError(cause)) {
+    return `${cause.message} ${describeCause(cause.cause)}`;
+  }
   if (cause instanceof Error) return cause.message;
   return String(cause);
 };
@@ -108,18 +113,11 @@ async function downloadReleaseArchive(
   release: ForkRelease,
   progress: DesktopUpdateProgress,
 ): Promise<Uint8Array> {
-  // Chromium's network stack honors the same system proxy as the app UI.
-  const response = await Electron.net.fetch(release.zipUrl, {
-    headers: {
-      accept: "application/octet-stream",
-      "user-agent": "t3code-fork-release-updater",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(Duration.toMillis(ARCHIVE_REQUEST_TIMEOUT)),
-  });
-  if (!response.ok) {
-    throw new Error(`Release archive download returned HTTP ${response.status}.`);
-  }
+  const response = await fetchReleaseResponse(
+    release.zipUrl,
+    "application/octet-stream",
+    ARCHIVE_REQUEST_TIMEOUT,
+  );
   if (response.body === null) {
     throw new Error("Release archive download returned an empty response body.");
   }
@@ -158,6 +156,34 @@ async function downloadReleaseArchive(
   return bytes;
 }
 
+const readReleaseText = Effect.fn("DesktopReleaseUpdates.readReleaseText")(
+  (url: string, accept: string, timeout: Duration.Duration) =>
+    Effect.tryPromise({
+      try: async () => {
+        const response = await fetchReleaseResponse(url, accept, timeout);
+        return response.text();
+      },
+      catch: (cause) => new ForkReleaseInstallError({ stage: "release metadata download", cause }),
+    }),
+);
+
+async function fetchReleaseResponse(
+  url: string,
+  accept: string,
+  timeout: Duration.Duration,
+): Promise<Response> {
+  // Release assets must honor Chromium's system proxy, including the checksum manifest.
+  const response = await Electron.net.fetch(url, {
+    headers: { accept, "user-agent": "t3code-fork-release-updater" },
+    redirect: "follow",
+    signal: AbortSignal.timeout(Duration.toMillis(timeout)),
+  });
+  if (!response.ok) {
+    throw new Error(`Update request to ${url} returned HTTP ${response.status}.`);
+  }
+  return response;
+}
+
 const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronApp = yield* ElectronApp.ElectronApp;
@@ -175,10 +201,7 @@ const make = Effect.gen(function* () {
 
   const executeRequest = (url: string, accept: string, timeout: Duration.Duration) =>
     HttpClientRequest.get(url).pipe(
-      HttpClientRequest.setHeaders({
-        accept,
-        "user-agent": "t3code-fork-release-updater",
-      }),
+      HttpClientRequest.setHeaders({ accept, "user-agent": "t3code-fork-release-updater" }),
       httpClient.execute,
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.timeout(timeout),
@@ -230,11 +253,18 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const checksumManifest = yield* executeRequest(
+      yield* Effect.promise(() =>
+        progress.update({
+          phase: "downloading",
+          percent: 0,
+          detail: "Downloading verification data…",
+        }),
+      );
+      const checksumManifest = yield* readReleaseText(
         release.checksumUrl,
         "text/plain",
         FILE_REQUEST_TIMEOUT,
-      ).pipe(Effect.flatMap((response) => response.text));
+      );
       const fileName = `T3-Code-${release.version}-arm64.zip`;
       const expectedSha256 = yield* Effect.try({
         try: () => readExpectedSha256(checksumManifest, fileName),
