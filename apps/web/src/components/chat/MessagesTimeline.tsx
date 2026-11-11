@@ -840,42 +840,43 @@ const ConversationTimeline = memo(function ConversationTimeline({
     unsubscribe = viewport?.subscribe(cancel);
     cancelJumpRef.current = cancel;
     void (async () => {
-      try {
-        await list.scrollToIndex({
-          index: jumpRowIndex,
-          animated: false,
-          viewPosition: 0,
-          viewPositionFallback: "start",
-          viewOffset: 24,
-        });
-        if (cancelled) return;
-        await settleListScroll(
-          list,
-          (element) => {
-            const state = list.getState();
-            const rowIndex = state.indexByKey(targetRowId);
-            const row = rowIndex === undefined ? undefined : state.elementAtIndex(rowIndex);
-            if (!row) return undefined;
-            return Math.max(
-              0,
-              Math.min(
-                element.scrollTop +
-                  row.getBoundingClientRect().top -
-                  element.getBoundingClientRect().top -
-                  24,
-                measuredEndOffset(element),
-              ),
-            );
-          },
-          () => cancelled || jumpedMessageRef.current !== messageId || listRef.current !== list,
-        );
-      } finally {
+      await list.scrollToIndex({
+        index: jumpRowIndex,
+        animated: false,
+        viewPosition: 0,
+        viewPositionFallback: "start",
+        viewOffset: 24,
+      });
+      if (cancelled) return;
+      await settleListScroll(
+        list,
+        (element) => {
+          const state = list.getState();
+          const rowIndex = state.indexByKey(targetRowId);
+          const row = rowIndex === undefined ? undefined : state.elementAtIndex(rowIndex);
+          if (!row) return undefined;
+          return Math.max(
+            0,
+            Math.min(
+              element.scrollTop +
+                row.getBoundingClientRect().top -
+                element.getBoundingClientRect().top -
+                24,
+              measuredEndOffset(element),
+            ),
+          );
+        },
+        () => cancelled || jumpedMessageRef.current !== messageId || listRef.current !== list,
+      );
+    })()
+      .finally(() => {
         if (cancelJumpRef.current === cancel) cancelJumpRef.current = null;
         release();
-      }
-      if (cancelled || jumpedMessageRef.current !== messageId) return;
-      onJumpedToMessage?.(messageId);
-    })();
+      })
+      .then(() => {
+        if (cancelled || jumpedMessageRef.current !== messageId) return;
+        onJumpedToMessage?.(messageId);
+      });
   }, [
     findListReady,
     jumpRow,
