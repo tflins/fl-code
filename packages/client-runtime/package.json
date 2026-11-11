@@ -331,6 +331,10 @@
       "types": "./src/state/subagentDisplay.ts",
       "default": "./src/state/subagentDisplay.ts"
     },
+    "./state/subagent-handoff": {
+      "types": "./src/state/subagentHandoff.ts",
+      "default": "./src/state/subagentHandoff.ts"
+    },
     "./state/subagentRuntime": {
       "types": "./src/state/subagentRuntime.ts",
       "default": "./src/state/subagentRuntime.ts"
@@ -378,6 +382,10 @@
     "./state/thread-subagents": {
       "types": "./src/state/threadSubagents.ts",
       "default": "./src/state/threadSubagents.ts"
+    },
+    "./state/thread-message-jump": {
+      "types": "./src/state/threadMessageJump.ts",
+      "default": "./src/state/threadMessageJump.ts"
     },
     "./state/thread-undo": {
       "types": "./src/state/threadUndo.ts",

@@ -35,6 +35,8 @@ import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { useTimelineFollow } from "./useTimelineFollow";
+import { settleListScroll } from "./useTimelinePositionRestore";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import {
   type PendingApproval,
@@ -52,6 +54,8 @@ import {
   decodeComposerContextFragment,
 } from "@t3tools/shared/composerContextClipboard";
 import { collectComposerContextReferences } from "@t3tools/shared/composerContextReferences";
+
+vi.mock(import("./useTimelinePositionRestore"), { spy: true });
 
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found",
@@ -211,6 +215,7 @@ async function click(element: HTMLElement) {
 
 function setup({ scheduledTasks = [] as ReadonlyArray<{ id: string; title: string }> } = {}) {
   environmentQuery.data = { tasks: scheduledTasks };
+  vi.mocked(settleListScroll).mockClear();
 }
 
 const TASK_ID = ScheduledTaskId.make("task-1");
@@ -1258,6 +1263,353 @@ describe("MessagesTimeline thread find", () => {
       const top = row!.getBoundingClientRect().top;
       expect(top).toBeGreaterThanOrEqual(bounds.top);
       expect(top).toBeLessThan(bounds.bottom);
+    });
+  });
+});
+
+describe("MessagesTimeline handoff jumps", () => {
+  const timeline = (
+    props: Omit<TimelineProps, "timelineEntries">,
+    routeThreadKey: string,
+    entries: ReadonlyArray<Entry>,
+    jumpToMessageId: MessageId | null,
+  ) => (
+    <MessagesTimeline
+      {...props}
+      routeThreadKey={routeThreadKey}
+      timelineEntries={entries as Entry[]}
+      jumpToMessageId={jumpToMessageId}
+    />
+  );
+
+  it("opens a child thread at the requested result instead of its end", async () => {
+    setup();
+    const props = baseProps();
+    const parentThreadKey = props.routeThreadKey;
+    const childThreadKey = "environment-local:thread-handoff-jump";
+    const targetMessageId = MessageId.make("handoff-target");
+    const parentEntries = Array.from({ length: 20 }, (_, index) =>
+      message(`Parent history ${index}\n\n${"context\n\n".repeat(8)}`, {}, `parent-${index}`),
+    );
+    const childEntries = [
+      ...Array.from({ length: 20 }, (_, index) =>
+        message(
+          `Child history ${index}\n\n${"context\n\n".repeat(8)}`,
+          { role: index % 2 === 0 ? "assistant" : "user" },
+          `child-${index}`,
+        ),
+      ),
+      message(
+        `Handoff target result\n\n${"Target line\n\n".repeat(160)}`,
+        { role: "assistant" },
+        targetMessageId,
+      ),
+    ];
+    await using screen = await renderElement(timeline(props, parentThreadKey, parentEntries, null));
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    await vi.waitFor(() => {
+      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+    });
+
+    await screen.rerender(timeline(props, childThreadKey, childEntries, targetMessageId));
+    await vi.waitFor(() => {
+      const target = screen.container.querySelector(
+        `[data-timeline-row-id="entry-${targetMessageId}"]`,
+      );
+      expect(target).not.toBeNull();
+      const bounds = viewport.getBoundingClientRect();
+      const targetBounds = target!.getBoundingClientRect();
+      expect(targetBounds.top).toBeGreaterThanOrEqual(bounds.top - 1);
+      expect(targetBounds.top).toBeLessThan(bounds.bottom);
+    });
+  });
+
+  it("opens a cached child thread at the requested result instead of its remembered end", async () => {
+    setup();
+    const props = baseProps();
+    const parentThreadKey = props.routeThreadKey;
+    const childThreadKey = "environment-local:thread-handoff-cached-jump";
+    const targetMessageId = MessageId.make("handoff-cached-target");
+    const childEntries = [
+      ...Array.from({ length: 20 }, (_, index) =>
+        message(
+          `Child history ${index}\n\n${"context\n\n".repeat(8)}`,
+          { role: index % 2 === 0 ? "assistant" : "user" },
+          `cached-${index}`,
+        ),
+      ),
+      message(
+        `Handoff cached result\n\n${"Target line\n\n".repeat(160)}`,
+        { role: "assistant" },
+        targetMessageId,
+      ),
+    ];
+    rememberTimelinePosition(
+      childThreadKey,
+      { rowId: "entry-cached-19", offsetWithinRow: 0, scrollOffset: 0, atEnd: true },
+      true,
+    );
+
+    await using screen = await renderElement(
+      timeline(props, parentThreadKey, [message("Parent context")], null),
+    );
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    await screen.rerender(timeline(props, childThreadKey, childEntries, targetMessageId));
+    await vi.waitFor(() => {
+      const target = screen.container.querySelector(
+        `[data-timeline-row-id="entry-${targetMessageId}"]`,
+      );
+      expect(target).not.toBeNull();
+      const bounds = viewport.getBoundingClientRect();
+      const targetBounds = target!.getBoundingClientRect();
+      expect(targetBounds.top).toBeGreaterThanOrEqual(bounds.top - 1);
+      expect(targetBounds.top).toBeLessThan(bounds.bottom);
+    });
+  });
+
+  it("opens a cached child thread at the recorded round message", async () => {
+    setup();
+    const props = baseProps();
+    const parentThreadKey = props.routeThreadKey;
+    const childThreadKey = "environment-local:thread-handoff-round-jump";
+    const roundMessageId = MessageId.make("handoff-round-start");
+    const childEntries = [
+      ...Array.from({ length: 8 }, (_, index) =>
+        message(
+          `Earlier context ${index}\n\n${"context\n\n".repeat(8)}`,
+          { role: index % 2 === 0 ? "assistant" : "user" },
+          `round-before-${index}`,
+        ),
+      ),
+      message("Round start prompt", { role: "user" }, roundMessageId),
+      ...Array.from({ length: 12 }, (_, index) =>
+        message(
+          `Round work ${index}\n\n${"context\n\n".repeat(8)}`,
+          { role: index % 2 === 0 ? "assistant" : "user" },
+          `round-after-${index}`,
+        ),
+      ),
+      message(
+        `Round final result\n\n${"Target line\n\n".repeat(160)}`,
+        { role: "assistant" },
+        "round-final-result",
+      ),
+    ];
+    rememberTimelinePosition(
+      childThreadKey,
+      { rowId: "entry-round-after-11", offsetWithinRow: 0, scrollOffset: 0, atEnd: true },
+      true,
+    );
+
+    await using screen = await renderElement(
+      timeline(props, parentThreadKey, [message("Parent context")], null),
+    );
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    await screen.rerender(timeline(props, childThreadKey, childEntries, roundMessageId));
+    await vi.waitFor(() => {
+      const target = screen.container.querySelector(
+        `[data-timeline-row-id="entry-${roundMessageId}"]`,
+      );
+      expect(target).not.toBeNull();
+      const bounds = viewport.getBoundingClientRect();
+      const targetBounds = target!.getBoundingClientRect();
+      expect(targetBounds.top).toBeGreaterThanOrEqual(bounds.top - 1);
+      expect(targetBounds.top).toBeLessThan(bounds.bottom);
+    });
+  });
+
+  it("keeps following after scrolling to end once a handoff jump has settled", async () => {
+    setup();
+    const listRef = createRef<LegendListRef | null>();
+    const props = { ...baseProps(), listRef, isWorking: true };
+    const parentThreadKey = props.routeThreadKey;
+    const childThreadKey = "environment-local:thread-handoff-jump-follow";
+    const targetMessageId = MessageId.make("handoff-follow-target");
+    const parentEntries: Entry[] = [
+      message(`Parent history\n\n${"context\n\n".repeat(20)}`, {}, "parent-follow"),
+    ];
+    const initialChildEntries: Entry[] = [
+      ...Array.from({ length: 24 }, (_, index) =>
+        message(
+          `Child history ${index}\n\n${"context\n\n".repeat(12)}`,
+          { role: index % 2 === 0 ? "assistant" : "user" },
+          `follow-${index}`,
+        ),
+      ),
+      message(
+        `Handoff target result\n\n${"Target line\n\n".repeat(1000)}`,
+        { role: "assistant" },
+        targetMessageId,
+      ),
+    ];
+    const streamedId = MessageId.make("follow-stream-1");
+    let childEntries: ReadonlyArray<Entry> = initialChildEntries;
+    let growth = 0;
+    let jumped = false;
+
+    function Harness() {
+      const [route, setRoute] = useState(parentThreadKey);
+      const [entries, setEntries] = useState<ReadonlyArray<Entry>>(parentEntries);
+      const [jump, setJump] = useState<MessageId | null>(null);
+      const [timelineAnchor, setTimelineAnchor] = useState<{
+        readonly threadKey: string | null;
+        readonly messageId: MessageId | null;
+      }>({ threadKey: parentThreadKey, messageId: null });
+      const follow = useTimelineFollow({
+        legendListRef: listRef,
+        composerTimelineInset: 0,
+        routeThreadKey: route,
+        activeThreadKey: route,
+        isServerThread: false,
+        serverProjection: null,
+        threadStatus: "live",
+        activeActivityRun: null,
+        activeRunningTurnId: null,
+        timelineEntries: entries,
+        timelineAnchorMessageId: timelineAnchor.messageId,
+        setTimelineAnchor,
+      });
+      const updateChildEntries = (next: ReadonlyArray<Entry>) => {
+        childEntries = next;
+        setEntries(next);
+      };
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => {
+              setRoute(childThreadKey);
+              setEntries(initialChildEntries);
+              setJump(targetMessageId);
+            }}
+          >
+            Jump
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              follow.scrollToEnd(false);
+            }}
+          >
+            Scroll to end
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              growth += 1;
+              updateChildEntries([
+                ...childEntries,
+                message(
+                  `Streamed tail ${growth}\n\n${"Streamed line\n\n".repeat(400 + growth * 100)}`,
+                  { role: "assistant" },
+                  growth === 1 ? streamedId : `follow-stream-${growth}`,
+                ),
+              ]);
+            }}
+          >
+            Append
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              updateChildEntries(
+                childEntries.map((entry) =>
+                  entry.kind === "message" && entry.message.id === streamedId
+                    ? {
+                        ...entry,
+                        message: {
+                          ...entry.message,
+                          text: `${entry.message.text}\n\n${"Grown line\n\n".repeat(20)}`,
+                        },
+                      }
+                    : entry,
+                ),
+              );
+            }}
+          >
+            Grow
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRoute(parentThreadKey);
+              setEntries(parentEntries);
+            }}
+          >
+            Leave
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRoute(childThreadKey);
+              setEntries(childEntries);
+            }}
+          >
+            Return
+          </button>
+          <MessagesTimeline
+            {...props}
+            routeThreadKey={route}
+            timelineEntries={entries as Entry[]}
+            jumpToMessageId={jump}
+            onJumpedToMessage={() => {
+              jumped = true;
+              setJump(null);
+            }}
+            liveFollowEnabled={follow.timelineLiveFollowEnabled}
+            onIsAtEndChange={follow.onIsAtEndChangeStable}
+            onViewportAttach={follow.attachTimelineViewport}
+          />
+        </>
+      );
+    }
+
+    await using screen = await renderElement(<Harness />);
+    await click(screen.button("Jump"));
+    const viewport = listRef.current!.getScrollableNode()!;
+    await vi.waitFor(() => {
+      expect(jumped).toBe(true);
+      const target = screen.container.querySelector(
+        `[data-timeline-row-id="entry-${targetMessageId}"]`,
+      );
+      expect(target).not.toBeNull();
+      const bounds = viewport.getBoundingClientRect();
+      const targetBounds = target!.getBoundingClientRect();
+      expect(targetBounds.top).toBeGreaterThanOrEqual(bounds.top - 1);
+      expect(targetBounds.top).toBeLessThan(bounds.bottom);
+    });
+
+    const settleCallsBefore = vi.mocked(settleListScroll).mock.calls.length;
+    await click(screen.button("Scroll to end"));
+    await vi.waitFor(() => {
+      expect(vi.mocked(settleListScroll).mock.calls.length).toBeGreaterThan(settleCallsBefore);
+    });
+    await act(() => vi.mocked(settleListScroll).mock.results.at(-1)?.value);
+    await vi.waitFor(() => {
+      expect(listRef.current!.getState().isFollowingEnd).toBe(true);
+      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+    });
+
+    await click(screen.button("Append"));
+    await vi.waitFor(() => {
+      expect(screen.container.textContent).toContain("Streamed tail 1");
+      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+    });
+
+    await click(screen.button("Grow"));
+    await vi.waitFor(() => {
+      expect(screen.container.textContent).toContain("Grown line");
+      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
+    });
+
+    await click(screen.button("Leave"));
+    await vi.waitFor(() => {
+      expect(screen.container.textContent).toContain("Parent history");
+    });
+    await click(screen.button("Return"));
+    await vi.waitFor(() => {
+      expect(screen.container.textContent).toContain("Streamed tail 1");
+      expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2);
     });
   });
 });

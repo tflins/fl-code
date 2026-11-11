@@ -1,6 +1,7 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { finishThreadMessageJump } from "@t3tools/client-runtime/state/thread-message-jump";
 import { Outlet, createFileRoute, redirect, useMatches } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ThreadRouteView } from "../components/ThreadRouteView";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
@@ -28,6 +29,16 @@ function ChatRouteLayout() {
     setBackgroundTarget(threadTarget);
   }
   const shownTarget = modalOpen ? backgroundTarget : threadTarget;
+  const shownThreadKey = shownTarget?.kind === "server" ? threadRouteTargetKey(shownTarget) : null;
+  const previousShownThreadKey = useRef(shownThreadKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels a pending jump only after the router actually leaves that thread
+  useEffect(() => {
+    const previousThreadKey = previousShownThreadKey.current;
+    if (previousThreadKey !== null && previousThreadKey !== shownThreadKey) {
+      finishThreadMessageJump(previousThreadKey);
+    }
+    previousShownThreadKey.current = shownThreadKey;
+  }, [shownThreadKey]);
   return (
     <>
       {shownTarget?.kind === "server" && !modalOpen ? (

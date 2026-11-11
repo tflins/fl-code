@@ -107,13 +107,26 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
+import {
+  finishThreadMessageJump,
+  pendingThreadMessageJump,
+  subscribeThreadMessageJump,
+} from "@t3tools/client-runtime/state/thread-message-jump";
 import { formatModelSlugName, resolveSelectableModel } from "@t3tools/shared/model";
 import { projectScriptCwd, resolveProjectScripts } from "@t3tools/shared/projectScripts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import { resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
 import { useAtomValue } from "@effect/atom-react";
-import { type SetStateAction, use, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type SetStateAction,
+  use,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { BackgroundThreadContext } from "./chat/backgroundThread";
 import { WorkspaceMutationIdContext } from "./chat/ChatMarkdownMedia";
 import { useLocation, useNavigate } from "@tanstack/react-router";
@@ -535,6 +548,15 @@ export default function ChatView(props: ChatViewProps) {
       hasMoreHistory: serverThreadHistory.hasMoreHistory,
       loading: serverThreadHistory.loading,
       error: serverThreadHistory.error,
+      onLoadThrough: (throughEntryId) => {
+        void loadEarlierThreadHistory({
+          environmentId: routeThreadDetailRef.environmentId,
+          input: {
+            threadId: routeThreadDetailRef.threadId,
+            throughEntryId,
+          },
+        });
+      },
       onLoadEarlier: (throughEntryId) => {
         void loadEarlierThreadHistory({
           environmentId: routeThreadDetailRef.environmentId,
@@ -1001,6 +1023,50 @@ export default function ChatView(props: ChatViewProps) {
     setTimelineAnchor({ threadKey: activeThreadKey, messageId: null });
   }
   const timelineAnchorMessageId = timelineAnchor.messageId;
+  const jumpMessageId = useSyncExternalStore(subscribeThreadMessageJump, () =>
+    activeThreadKey === null ? null : pendingThreadMessageJump(activeThreadKey),
+  );
+  const jumpMessageLoaded =
+    jumpMessageId !== null &&
+    serverVisibleTurnItems.some(
+      ({ item }) =>
+        (item.type === "assistant_message" || item.type === "user_message") &&
+        item.messageId === jumpMessageId,
+    );
+  const jumpHistoryAvailable = threadHistoryControls !== undefined;
+  const jumpHistoryLoading = threadHistoryControls?.loading ?? false;
+  const jumpHistoryHasMore = threadHistoryControls?.hasMoreHistory ?? false;
+  const jumpHistoryError = threadHistoryControls?.error ?? null;
+  const jumpHistoryLoadThrough = threadHistoryControls?.onLoadThrough;
+  // A task result opens its child thread at a recorded message. Page history to that message
+  // before the timeline asks the list to scroll, and stop if the record no longer exists.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- drives history paging for a pending cross-thread message jump
+  useEffect(() => {
+    if (jumpMessageId === null || jumpMessageLoaded) return;
+    if (!jumpHistoryAvailable) {
+      if (!threadDetailLoading && serverProjection !== null && activeThreadKey !== null) {
+        finishThreadMessageJump(activeThreadKey);
+      }
+      return;
+    }
+    if (jumpHistoryLoading) return;
+    if (!jumpHistoryHasMore || jumpHistoryError !== null) {
+      if (activeThreadKey !== null) finishThreadMessageJump(activeThreadKey);
+      return;
+    }
+    jumpHistoryLoadThrough?.(jumpMessageId);
+  }, [
+    activeThreadKey,
+    jumpHistoryAvailable,
+    jumpHistoryError,
+    jumpHistoryHasMore,
+    jumpHistoryLoadThrough,
+    jumpHistoryLoading,
+    jumpMessageId,
+    jumpMessageLoaded,
+    serverProjection,
+    threadDetailLoading,
+  ]);
   // LegendList never recomputes anchored end-space geometry, leaving phantom scroll range after content fits.
   const anchorRunSettled = (() => {
     if (timelineAnchorMessageId === null) return false;
@@ -3450,6 +3516,10 @@ export default function ChatView(props: ChatViewProps) {
                   workspaceRoot={activeWorkspaceRoot}
                   skills={timelineSkills}
                   anchorMessageId={timelineAnchorMessageId}
+                  jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
+                  onJumpedToMessage={(_messageId) => {
+                    if (activeThreadKey !== null) finishThreadMessageJump(activeThreadKey);
+                  }}
                   onAnchorReady={onTimelineAnchorReadyStable}
                   onAnchorSizeChanged={onTimelineAnchorSizeChangedStable}
                   contentInsetEndAdjustment={composerTimelineInset}

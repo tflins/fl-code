@@ -39,6 +39,7 @@ import {
 import type { TimestampFormat } from "@t3tools/contracts/settings";
 import {
   BotIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   CircleStopIcon,
   ArrowRightLeftIcon,
@@ -47,6 +48,7 @@ import {
   GitForkIcon,
   MessageSquareIcon,
 } from "lucide-react";
+import { useState } from "react";
 
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../ui/tooltip";
 import {
@@ -64,6 +66,8 @@ import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import { subagentResumedSince } from "./V2LifecycleRow.logic";
 import { Button, InlineButton } from "../ui/button";
 import { T3Wordmark } from "../T3Wordmark";
+import { SubagentHandoffDetails } from "./SubagentHandoffDetails";
+import type { SubagentHandoffNavigationTarget } from "@t3tools/client-runtime/state/subagent-handoff";
 
 export type { HandoffTimelineRun } from "@t3tools/client-runtime/handoff";
 
@@ -416,6 +420,7 @@ function SubagentTimelineLink(props: {
     readonly timestamp: string;
   };
 }) {
+  const [handoffOpen, setHandoffOpen] = useState(false);
   const agent = useAtomValue(
     environmentThreadDetails.threadAtom(props.parentRef),
     (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
@@ -435,6 +440,22 @@ function SubagentTimelineLink(props: {
               params: buildThreadRouteParams(scopeThreadRef(remote.environmentId, remote.threadId)),
             })
         : null;
+  const canOpenHandoffTarget = (target: SubagentHandoffNavigationTarget) =>
+    target.environmentId === props.parentRef.environmentId ||
+    (remote !== undefined &&
+      target.environmentId === remote.environmentId &&
+      remoteEnvironment !== null);
+  const openHandoffTarget = (target: SubagentHandoffNavigationTarget) => {
+    if (target.environmentId === props.parentRef.environmentId) {
+      props.onOpenThread(target.threadId);
+      return;
+    }
+    if (remote?.environmentId !== target.environmentId || remoteEnvironment === null) return;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(target.environmentId, target.threadId)),
+    });
+  };
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -504,43 +525,76 @@ function SubagentTimelineLink(props: {
   const className =
     "group/subagent flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left";
   return (
-    <Tooltip>
-      <TooltipTrigger
-        delay={200}
-        render={
-          open === null ? (
-            <div data-v2-item-type="subagent" aria-description={statusLabel} className={className}>
-              {content}
-            </div>
-          ) : (
-            <button
-              type="button"
-              data-v2-item-type="subagent"
-              aria-label={`Open ${props.title}`}
-              aria-description={statusLabel}
-              onClick={open}
-              className={cn(
-                className,
-                "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-              )}
-            >
-              {content}
-            </button>
-          )
-        }
-      />
-      <ThreadHoverCardPopup>
-        <SubagentTimelineTooltip
-          {...props}
-          elapsed={agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null}
-          model={agent?.model ?? null}
-          modelSelection={agent?.modelSelection}
-          status={liveStatus}
-          result={agent?.result ?? props.result}
-          progress={agent?.progress ?? props.progress}
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          delay={200}
+          render={
+            open === null ? (
+              <div
+                data-v2-item-type="subagent"
+                aria-description={statusLabel}
+                className={className}
+              >
+                {content}
+              </div>
+            ) : (
+              <button
+                type="button"
+                data-v2-item-type="subagent"
+                aria-label={`Open ${props.title}`}
+                aria-description={statusLabel}
+                onClick={open}
+                className={cn(
+                  className,
+                  "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+                )}
+              >
+                {content}
+              </button>
+            )
+          }
         />
-      </ThreadHoverCardPopup>
-    </Tooltip>
+        <ThreadHoverCardPopup>
+          <SubagentTimelineTooltip
+            {...props}
+            elapsed={
+              agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null
+            }
+            model={agent?.model ?? null}
+            modelSelection={agent?.modelSelection}
+            status={liveStatus}
+            result={agent?.result ?? props.result}
+            progress={agent?.progress ?? props.progress}
+          />
+        </ThreadHoverCardPopup>
+      </Tooltip>
+      {props.origin === "app_owned" ? (
+        <div className="ms-8 flex min-w-0 flex-col">
+          <button
+            type="button"
+            aria-expanded={handoffOpen}
+            onClick={() => setHandoffOpen((open) => !open)}
+            className="flex w-fit items-center gap-1 rounded px-2 py-1 text-2xs text-muted-foreground hover:bg-accent/20 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+          >
+            <ChevronDownIcon
+              aria-hidden
+              className={cn("size-3 transition-transform", handoffOpen && "rotate-180")}
+            />
+            {handoffOpen ? "Hide handoff records" : "Show handoff records"}
+          </button>
+          {handoffOpen ? (
+            <SubagentHandoffDetails
+              parentEnvironmentId={props.parentRef.environmentId}
+              parentThreadId={props.parentRef.threadId}
+              subagentId={props.subagentId}
+              canOpenTarget={canOpenHandoffTarget}
+              onOpenTarget={openHandoffTarget}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </>
   );
 }
 

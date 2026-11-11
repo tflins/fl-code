@@ -352,6 +352,10 @@ export interface ProjectionRecordFilter {
   readonly latestProviderTurnUsageOnly?: true;
   readonly runtimeRequestStatuses?: ReadonlyArray<OrchestrationV2RuntimeRequest["status"]>;
   readonly contextTransferStatuses?: ReadonlyArray<OrchestrationV2ContextTransfer["status"]>;
+  readonly contextTransferTypes?: ReadonlyArray<OrchestrationV2ContextTransfer["type"]>;
+  readonly contextTransferSourceThreadIds?: ReadonlyArray<ThreadId>;
+  readonly contextTransferTargetThreadIds?: ReadonlyArray<ThreadId>;
+  readonly contextTransferTargetRunIds?: ReadonlyArray<RunId>;
   readonly subagentIds?: ReadonlyArray<NodeId>;
   readonly subagentRunIds?: ReadonlyArray<RunId>;
   readonly nodeIds?: ReadonlyArray<NodeId>;
@@ -3686,7 +3690,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY rowid ASC
               `,
           (fields !== undefined && !fields.includes("contextTransfers")) ||
-          (window === undefined && matchesNothing(filter?.contextTransferStatuses))
+          (window === undefined &&
+            matchesNothing(
+              filter?.contextTransferStatuses,
+              filter?.contextTransferTypes,
+              filter?.contextTransferSourceThreadIds,
+              filter?.contextTransferTargetThreadIds,
+              filter?.contextTransferTargetRunIds,
+            ))
             ? Effect.succeed([])
             : window === undefined
               ? sql<PayloadRow>`
@@ -3694,6 +3705,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             FROM orchestration_v2_projection_context_transfers
             WHERE (source_thread_id = ${threadId} OR target_thread_id = ${threadId})
               ${filter?.contextTransferStatuses === undefined ? sql`` : sql`AND status IN (SELECT value FROM json_each(${encodeIdList(filter.contextTransferStatuses)}))`}
+              ${filter?.contextTransferTypes === undefined ? sql`` : sql`AND type IN (SELECT value FROM json_each(${encodeIdList(filter.contextTransferTypes)}))`}
+              ${filter?.contextTransferSourceThreadIds === undefined ? sql`` : sql`AND source_thread_id IN (SELECT value FROM json_each(${encodeIdList(filter.contextTransferSourceThreadIds)}))`}
+              ${filter?.contextTransferTargetThreadIds === undefined ? sql`` : sql`AND target_thread_id IN (SELECT value FROM json_each(${encodeIdList(filter.contextTransferTargetThreadIds)}))`}
+              ${filter?.contextTransferTargetRunIds === undefined ? sql`` : sql`AND target_run_id IN (SELECT value FROM json_each(${encodeIdList(filter.contextTransferTargetRunIds)}))`}
             ORDER BY rowid ASC
           `
               : sql<PayloadRow>`

@@ -191,6 +191,13 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       idleTtlMs: 60_000,
     }),
+    // Mounted only while one round's handoff is expanded.
+    subagentHandoff: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:subagent-handoff",
+      tag: ORCHESTRATION_V2_WS_METHODS.getSubagentHandoff,
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+    }),
     fullThreadDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:full-thread-diff",
       tag: ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,

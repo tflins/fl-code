@@ -3629,6 +3629,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   stopWorkflow: "orchestration.stopWorkflow",
   forceStopThread: "orchestration.forceStopThread",
   getTurnItem: "orchestration.getTurnItem",
+  getSubagentHandoff: "orchestration.getSubagentHandoff",
   launchThread: "orchestration.launchThread",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
@@ -4186,6 +4187,85 @@ export const OrchestrationV2GetTurnItemResult = Schema.Struct({
 });
 export type OrchestrationV2GetTurnItemResult = typeof OrchestrationV2GetTurnItemResult.Type;
 
+export const SUBAGENT_HANDOFF_MAX_CHARS = 16_000;
+
+export const OrchestrationV2SubagentHandoffInput = Schema.Struct({
+  parentThreadId: ThreadId,
+  subagentId: NodeId,
+  promptOffset: Schema.optionalKey(NonNegativeInt),
+  resultOffset: Schema.optionalKey(NonNegativeInt),
+  deliveryOffset: Schema.optionalKey(NonNegativeInt),
+  revisions: Schema.optionalKey(
+    Schema.Struct({
+      prompt: TrimmedNonEmptyString,
+      result: TrimmedNonEmptyString,
+      delivery: TrimmedNonEmptyString,
+    }),
+  ),
+  maxChars: Schema.optionalKey(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: SUBAGENT_HANDOFF_MAX_CHARS })),
+  ),
+});
+export type OrchestrationV2SubagentHandoffInput = typeof OrchestrationV2SubagentHandoffInput.Type;
+
+export const OrchestrationV2SubagentHandoffBody = Schema.Struct({
+  availability: Schema.Literals(["available", "unavailable"]),
+  revision: TrimmedNonEmptyString,
+  text: Schema.String,
+  truncated: Schema.Boolean,
+  nextOffset: Schema.NullOr(NonNegativeInt),
+});
+export type OrchestrationV2SubagentHandoffBody = typeof OrchestrationV2SubagentHandoffBody.Type;
+
+export const OrchestrationV2SubagentHandoffResult = Schema.Struct({
+  body: OrchestrationV2SubagentHandoffBody,
+  source: Schema.NullOr(Schema.Literals(["child_run", "parent_record"])),
+  messageId: Schema.NullOr(MessageId),
+  turnItemId: Schema.NullOr(TurnItemId),
+});
+export type OrchestrationV2SubagentHandoffResult = typeof OrchestrationV2SubagentHandoffResult.Type;
+
+export const OrchestrationV2SubagentHandoffTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("local"), threadId: ThreadId }),
+  Schema.Struct({
+    kind: Schema.Literal("remote"),
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    runId: Schema.NullOr(RunId),
+  }),
+]);
+export type OrchestrationV2SubagentHandoffTarget = typeof OrchestrationV2SubagentHandoffTarget.Type;
+
+export const OrchestrationV2SubagentHandoff = Schema.Struct({
+  parentThreadId: ThreadId,
+  subagentId: NodeId,
+  parentRunId: Schema.NullOr(RunId),
+  executionStatus: OrchestrationV2Subagent.fields.status,
+  completionDelivery: Schema.NullOr(OrchestrationV2DelegatedCompletionTaskDelivery),
+  requestedModel: Schema.NullOr(
+    Schema.Struct({
+      model: Schema.NullOr(TrimmedNonEmptyString),
+      selection: Schema.NullOr(ModelSelection),
+    }),
+  ),
+  executedModel: Schema.NullOr(TrimmedNonEmptyString),
+  prompt: OrchestrationV2SubagentHandoffBody,
+  result: OrchestrationV2SubagentHandoffResult,
+  deliveryResult: OrchestrationV2SubagentHandoffBody,
+  childRunId: Schema.NullOr(RunId),
+  roundAssociation: Schema.Literals(["run_delegated_task_id", "spawn_transfer", "unavailable"]),
+  target: Schema.NullOr(OrchestrationV2SubagentHandoffTarget),
+  navigation: Schema.NullOr(
+    Schema.Struct({
+      kind: Schema.Literals(["result", "round"]),
+      messageId: MessageId,
+    }),
+  ),
+  childThreadState: Schema.Literals(["available", "deleted", "missing", "unknown"]),
+  updatedAt: Schema.DateTimeUtc,
+});
+export type OrchestrationV2SubagentHandoff = typeof OrchestrationV2SubagentHandoff.Type;
+
 const WORKFLOW_SCRIPT_ERROR_MESSAGES = {
   "invalid-path": "Workflow scripts must be absolute .js paths.",
   "root-unavailable": "Script root unavailable.",
@@ -4335,6 +4415,10 @@ export const OrchestrationV2RpcSchemas = {
   getTurnItem: {
     input: OrchestrationV2GetTurnItemInput,
     output: OrchestrationV2GetTurnItemResult,
+  },
+  getSubagentHandoff: {
+    input: OrchestrationV2SubagentHandoffInput,
+    output: Schema.NullOr(OrchestrationV2SubagentHandoff),
   },
   launchThread: {
     input: OrchestrationV2ThreadLaunchInput,

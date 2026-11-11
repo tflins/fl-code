@@ -3,7 +3,9 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  NodeId,
   type OrchestrationV2Command,
+  type OrchestrationV2ContextTransfer,
   type OrchestrationV2Run,
   type OrchestrationV2ProviderThread,
   ProviderThreadId,
@@ -15,6 +17,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -871,5 +874,828 @@ it.effect("Force stop refuses once a newer run has started, before killing anyth
     }).pipe(Effect.provide(layerTest));
     expect(error.reason).toBe("superseded");
     expect(killed).toBe(false);
+  }),
+);
+
+function subagentHandoffLayer(input: {
+  readonly getThreadRecords: (
+    threadId: ThreadId,
+    fields: ReadonlyArray<string>,
+    filter?: unknown,
+  ) => unknown;
+  readonly getThreadShell: (threadId: ThreadId) => unknown;
+  readonly dispatched: Array<string>;
+}) {
+  return ThreadManagementService.layer.pipe(
+    Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        getThreadRecords: ((threadId: ThreadId, fields: ReadonlyArray<string>, filter: unknown) =>
+          Effect.succeed(input.getThreadRecords(threadId, fields, filter) as never)) as never,
+        getThreadShell: ((threadId: ThreadId) =>
+          Effect.succeed(input.getThreadShell(threadId) as never)) as never,
+        dispatch: ((command: { readonly type: string }) =>
+          Effect.sync(() => {
+            input.dispatched.push(command.type);
+            return { sequence: 1, storedEvents: [] } as never;
+          })) as never,
+      }),
+    ),
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(layerReceiptsTest),
+  );
+}
+
+function handoffFixture() {
+  const parentThreadId = ThreadId.make("thread:handoff:parent");
+  const childThreadId = ThreadId.make("thread:handoff:child");
+  const parentRunId = RunId.make("run:handoff:parent");
+  const taskAId = NodeId.make("node:handoff:task-a");
+  const taskBId = NodeId.make("node:handoff:task-b");
+  const childProviderThreadId = ProviderThreadId.make("provider-thread:handoff:child");
+  const attemptA = "attempt:handoff:a";
+  const attemptB = "attempt:handoff:b";
+  const at = DateTime.makeUnsafe("2026-11-11T01:00:00.000Z");
+  const later = DateTime.makeUnsafe("2026-11-11T01:05:00.000Z");
+  const modelSelection = {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "requested-model",
+  };
+  const run = (
+    id: RunId,
+    ordinal: number,
+    delegatedTaskId: NodeId,
+    activeAttemptId: string,
+  ): OrchestrationV2Run => ({
+    id,
+    threadId: childThreadId,
+    ordinal,
+    providerInstanceId: modelSelection.instanceId,
+    modelSelection,
+    providerThreadId: childProviderThreadId,
+    userMessageId: MessageId.make(`message:${id}:user`),
+    rootNodeId: NodeId.make("node:handoff:child-root"),
+    activeAttemptId: activeAttemptId as never,
+    status: "completed",
+    requestedAt: at,
+    startedAt: at,
+    completedAt: later,
+    checkpointId: null,
+    contextHandoffId: null,
+    delegatedTaskId,
+  });
+  const runA = run(RunId.make("run:handoff:a"), 1, taskAId, attemptA);
+  const runB = run(RunId.make("run:handoff:b"), 2, taskBId, attemptB);
+  const task = (
+    id: NodeId,
+    result: string | null,
+    status: "running" | "completed",
+  ): OrchestrationV2ThreadProjection["subagents"][number] =>
+    ({
+      id,
+      threadId: parentThreadId,
+      runId: parentRunId,
+      parentNodeId: NodeId.make("node:handoff:parent-root"),
+      origin: "app_owned",
+      createdBy: "agent",
+      driver: "codex",
+      providerInstanceId: modelSelection.instanceId,
+      providerThreadId: null,
+      childThreadId,
+      nativeTaskRef: null,
+      prompt: `Prompt ${id}`,
+      title: null,
+      model: "requested-model",
+      modelSelection,
+      completionWake: "always",
+      status,
+      result,
+      startedAt: at,
+      completedAt: status === "completed" ? later : null,
+      updatedAt: later,
+    }) as never;
+  const taskA = task(taskAId, "Parent delivery A", "completed");
+  const taskB = task(taskBId, "Parent delivery B", "completed");
+  const artifact = (
+    runId: RunId,
+    id: string,
+    text: string,
+    ordinal: number,
+  ): {
+    readonly message: OrchestrationV2ThreadProjection["messages"][number];
+    readonly turnItem: OrchestrationV2ThreadProjection["turnItems"][number];
+  } => ({
+    message: {
+      createdBy: "agent",
+      creationSource: "provider",
+      id: MessageId.make(`message:${id}`),
+      threadId: childThreadId,
+      runId,
+      nodeId: NodeId.make("node:handoff:child-root"),
+      role: "assistant",
+      text,
+      attachments: [],
+      streaming: false,
+      createdAt: at,
+      updatedAt: later,
+    } as never,
+    turnItem: {
+      id: TurnItemId.make(`item:${id}`),
+      threadId: childThreadId,
+      runId,
+      nodeId: NodeId.make("node:handoff:child-root"),
+      providerThreadId: childProviderThreadId,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      status: "completed",
+      type: "assistant_message",
+      title: null,
+      startedAt: at,
+      completedAt: later,
+      updatedAt: later,
+      messageId: MessageId.make(`message:${id}`),
+      text,
+      streaming: false,
+    } as never,
+  });
+  const final = artifact(runA.id, "handoff-final", "Final result A", 2);
+  const laterCommentary = artifact(runA.id, "handoff-later", "Later commentary", 3);
+  const other = artifact(runB.id, "handoff-other", "Result B", 4);
+  const providerThread = {
+    id: childProviderThreadId,
+    nativeThreadRef: { driver: "codex", nativeId: "native-thread", strength: "strong" },
+  };
+  const providerTurn = {
+    id: "provider-turn:handoff:a",
+    providerThreadId: childProviderThreadId,
+    runAttemptId: attemptA,
+    nativeTurnRef: { driver: "codex", nativeId: "native-turn", strength: "strong" },
+    ordinal: 1,
+    model: "executed-model-a",
+  };
+  const transfer = (id: string, sourceRun: OrchestrationV2Run, turnItemId: string) =>
+    ({
+      id,
+      type: "subagent_result",
+      sourceThreadId: childThreadId,
+      targetThreadId: parentThreadId,
+      sourcePoint: {
+        threadId: childThreadId,
+        runId: sourceRun.id,
+        turnItemId,
+        providerThreadRef: providerThread.nativeThreadRef,
+        providerTurnRef: providerTurn.nativeTurnRef,
+      },
+      basePoint: null,
+      sourceProviderInstanceId: modelSelection.instanceId,
+      targetProviderInstanceId: modelSelection.instanceId,
+      targetRunId: parentRunId,
+      status: "consumed",
+      resolution: null,
+      createdBy: "system",
+      error: null,
+      createdAt: later,
+      updatedAt: later,
+      consumedAt: later,
+    }) as never;
+  const transfers = [
+    transfer("transfer:a", runA, final.turnItem.id),
+    transfer("transfer:b", runB, other.turnItem.id),
+  ];
+  return {
+    parentThreadId,
+    childThreadId,
+    parentRunId,
+    runA,
+    runB,
+    taskA,
+    taskB,
+    final,
+    laterCommentary,
+    other,
+    providerThread,
+    providerTurn,
+    transfers,
+  };
+}
+
+it.effect("reads one round's exact child result and model without side effects", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const dispatched: Array<string> = [];
+    const reads: Array<{
+      readonly threadId: ThreadId;
+      readonly fields: ReadonlyArray<string>;
+      readonly filter: unknown;
+    }> = [];
+    const layerTest = subagentHandoffLayer({
+      dispatched,
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: null,
+      }),
+      getThreadRecords: (threadId, fields, filter) => {
+        reads.push({ threadId, fields, filter });
+        if (threadId === fixture.parentThreadId) {
+          return {
+            thread: { id: fixture.parentThreadId },
+            subagents: [fixture.taskA, fixture.taskB],
+            contextTransfers: fixture.transfers,
+          };
+        }
+        return {
+          thread: { id: fixture.childThreadId },
+          runs: [fixture.runA, fixture.runB],
+          contextTransfers: [],
+          providerThreads: [fixture.providerThread],
+          providerTurns: [fixture.providerTurn],
+          messages: [fixture.final.message, fixture.laterCommentary.message, fixture.other.message],
+          turnItems: [
+            fixture.final.turnItem,
+            fixture.laterCommentary.turnItem,
+            fixture.other.turnItem,
+          ],
+        };
+      },
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: fixture.taskA.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toMatchObject({
+      subagentId: fixture.taskA.id,
+      childRunId: fixture.runA.id,
+      completionDelivery: null,
+      requestedModel: {
+        model: "requested-model",
+        selection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "requested-model",
+        },
+      },
+      executedModel: "executed-model-a",
+      roundAssociation: "run_delegated_task_id",
+      target: { kind: "local", threadId: fixture.childThreadId },
+      childThreadState: "available",
+      result: {
+        source: "child_run",
+        messageId: fixture.final.message.id,
+        turnItemId: fixture.final.turnItem.id,
+      },
+      navigation: { kind: "result", messageId: fixture.final.message.id },
+    });
+    expect(handoff?.result.body.text).toBe("Final result A");
+    expect(dispatched).toEqual([]);
+    expect(
+      reads.find(
+        (read) =>
+          read.threadId === fixture.childThreadId && read.fields.join() === "messages,turnItems",
+      )?.filter,
+    ).toMatchObject({ messageRunIds: [fixture.runA.id], turnItemRunId: fixture.runA.id });
+    expect(
+      reads.find(
+        (read) =>
+          read.threadId === fixture.parentThreadId && read.fields.join() === "contextTransfers",
+      )?.filter,
+    ).toMatchObject({
+      contextTransferTypes: ["subagent_result"],
+      contextTransferSourceThreadIds: [fixture.childThreadId],
+      contextTransferTargetThreadIds: [fixture.parentThreadId],
+      contextTransferTargetRunIds: [fixture.parentRunId],
+    });
+  }),
+);
+
+it.effect("resolves a spawn task through unbound restart continuations", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const spawnRun = {
+      ...fixture.runA,
+      id: RunId.make("run:handoff:spawn"),
+      ordinal: 1,
+      delegatedTaskId: undefined,
+      activeAttemptId: "attempt:handoff:spawn" as never,
+      userMessageId: MessageId.make("message:handoff:spawn:user"),
+    };
+    const continuation1 = {
+      ...spawnRun,
+      id: RunId.make("run:handoff:continuation-1"),
+      ordinal: 2,
+      restartContinuationOfRunId: spawnRun.id,
+      activeAttemptId: "attempt:handoff:continuation-1" as never,
+      userMessageId: MessageId.make("message:handoff:continuation-1:user"),
+    };
+    const continuation2 = {
+      ...spawnRun,
+      id: RunId.make("run:handoff:continuation-2"),
+      ordinal: 3,
+      restartContinuationOfRunId: continuation1.id,
+      activeAttemptId: "attempt:handoff:continuation-2" as never,
+      userMessageId: MessageId.make("message:handoff:continuation-2:user"),
+    };
+    const unrelated = {
+      ...spawnRun,
+      id: RunId.make("run:handoff:unrelated"),
+      ordinal: 4,
+      activeAttemptId: "attempt:handoff:unrelated" as never,
+      userMessageId: MessageId.make("message:handoff:unrelated:user"),
+    };
+    const resultMessageId = MessageId.make("message:handoff:continuation-2:result");
+    const continuationResult = {
+      message: {
+        ...fixture.final.message,
+        id: resultMessageId,
+        runId: continuation2.id,
+        text: "Continuation two result",
+      },
+      turnItem: {
+        ...fixture.final.turnItem,
+        id: TurnItemId.make("item:handoff:continuation-2:result"),
+        runId: continuation2.id,
+        messageId: resultMessageId,
+        text: "Continuation two result",
+      },
+    };
+    const unrelatedResult = {
+      message: {
+        ...fixture.other.message,
+        id: MessageId.make("message:handoff:unrelated:result"),
+        runId: unrelated.id,
+        text: "Unrelated later result",
+      },
+      turnItem: {
+        ...fixture.other.turnItem,
+        id: TurnItemId.make("item:handoff:unrelated:result"),
+        runId: unrelated.id,
+        messageId: MessageId.make("message:handoff:unrelated:result"),
+        text: "Unrelated later result",
+      },
+    };
+    const providerTurns = [spawnRun, continuation1, continuation2, unrelated].map((run, index) => ({
+      ...fixture.providerTurn,
+      id: `provider-turn:handoff:${run.id}`,
+      runAttemptId: run.activeAttemptId,
+      ordinal: index + 1,
+      model: `executed-model-${index + 1}`,
+    }));
+    const resultTransfer = {
+      ...(fixture.transfers[0] as unknown as OrchestrationV2ContextTransfer),
+      id: "transfer:handoff:continuation-2" as OrchestrationV2ContextTransfer["id"],
+      sourcePoint: {
+        threadId: fixture.childThreadId,
+        runId: continuation2.id,
+        turnItemId: continuationResult.turnItem.id,
+      },
+    } satisfies OrchestrationV2ContextTransfer;
+    const spawnTransfer = {
+      ...(fixture.transfers[0] as unknown as OrchestrationV2ContextTransfer),
+      id: "transfer:handoff:spawn" as OrchestrationV2ContextTransfer["id"],
+      type: "subagent_spawn",
+      sourceThreadId: fixture.parentThreadId,
+      targetThreadId: fixture.childThreadId,
+      sourcePoint: { threadId: fixture.parentThreadId },
+      targetRunId: spawnRun.id,
+    } satisfies OrchestrationV2ContextTransfer;
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: null,
+      }),
+      getThreadRecords: (threadId, fields) => {
+        if (threadId === fixture.parentThreadId) {
+          return {
+            thread: { id: threadId },
+            subagents: [fixture.taskA],
+            ...(fields.includes("contextTransfers") ? { contextTransfers: [resultTransfer] } : {}),
+          };
+        }
+        return {
+          thread: {
+            id: threadId,
+            forkedFrom: { type: "node", nodeId: fixture.taskA.id },
+          },
+          runs: [spawnRun, continuation1, continuation2, unrelated],
+          contextTransfers: [spawnTransfer],
+          providerThreads: [fixture.providerThread],
+          providerTurns,
+          messages: [continuationResult.message, unrelatedResult.message],
+          turnItems: [continuationResult.turnItem, unrelatedResult.turnItem],
+        };
+      },
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: fixture.taskA.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toMatchObject({
+      childRunId: continuation2.id,
+      executedModel: "executed-model-3",
+      roundAssociation: "spawn_transfer",
+      result: {
+        source: "child_run",
+        messageId: continuationResult.message.id,
+        turnItemId: continuationResult.turnItem.id,
+      },
+      navigation: { kind: "result", messageId: continuationResult.message.id },
+    });
+    expect(handoff?.result.body.text).toBe("Continuation two result");
+  }),
+);
+
+it.effect("does not use an invalid transfer anchor or fall back to child latest", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const transfers = fixture.transfers.map((transfer, index) => {
+      if (index !== 0) return transfer;
+      const typed = transfer as unknown as OrchestrationV2ContextTransfer;
+      return {
+        ...typed,
+        sourcePoint: {
+          ...typed.sourcePoint,
+          providerTurnRef: {
+            driver: ProviderDriverKind.make("codex"),
+            nativeId: "other-turn",
+            strength: "strong",
+          },
+        },
+      } satisfies OrchestrationV2ContextTransfer;
+    });
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: null,
+      }),
+      getThreadRecords: (threadId, fields) => {
+        if (threadId === fixture.parentThreadId) {
+          return {
+            thread: { id: threadId },
+            subagents: [fixture.taskA, fixture.taskB],
+            ...(fields.includes("contextTransfers") ? { contextTransfers: transfers } : {}),
+          };
+        }
+        return {
+          thread: { id: threadId },
+          runs: [fixture.runA, fixture.runB],
+          contextTransfers: [],
+          providerThreads: [fixture.providerThread],
+          providerTurns: [fixture.providerTurn],
+          messages: [fixture.final.message, fixture.laterCommentary.message, fixture.other.message],
+          turnItems: [
+            fixture.final.turnItem,
+            fixture.laterCommentary.turnItem,
+            fixture.other.turnItem,
+          ],
+        };
+      },
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: fixture.taskA.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toMatchObject({
+      childRunId: null,
+      executedModel: null,
+      roundAssociation: "unavailable",
+      navigation: null,
+      result: {
+        source: "parent_record",
+        messageId: null,
+        turnItemId: null,
+      },
+    });
+    expect(handoff?.result.body.text).toBe("Parent delivery A");
+  }),
+);
+
+it.effect("keeps a remote task bound to its recorded environment without remote reads", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const remoteEnvironmentId = EnvironmentId.make("environment:handoff:remote");
+    const remoteThreadId = ThreadId.make("thread:handoff:remote-child");
+    const remoteRunId = RunId.make("run:handoff:remote-child");
+    const task = {
+      ...fixture.taskA,
+      childThreadId: null,
+      remoteChild: {
+        environmentId: remoteEnvironmentId,
+        threadId: remoteThreadId,
+        label: "Remote machine",
+        runId: remoteRunId,
+      },
+    };
+    const reads: ThreadId[] = [];
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => {
+        throw new Error("remote handoff must not read a local child shell");
+      },
+      getThreadRecords: (threadId) => {
+        reads.push(threadId);
+        return {
+          thread: { id: threadId },
+          subagents: [task],
+        };
+      },
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: task.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(reads).toEqual([fixture.parentThreadId]);
+    expect(handoff).toMatchObject({
+      childRunId: null,
+      executedModel: null,
+      roundAssociation: "unavailable",
+      navigation: null,
+      result: { source: "parent_record" },
+      target: {
+        kind: "remote",
+        environmentId: remoteEnvironmentId,
+        threadId: remoteThreadId,
+        runId: remoteRunId,
+      },
+      childThreadState: "unknown",
+    });
+  }),
+);
+
+it.effect("does not expose T3 handoff semantics for a provider-native subagent", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const task = { ...fixture.taskA, origin: "provider_native" as const };
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => {
+        throw new Error("provider-native handoff must not read a child shell");
+      },
+      getThreadRecords: (threadId) => ({
+        thread: { id: threadId },
+        subagents: [task],
+      }),
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: task.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toBeNull();
+  }),
+);
+
+it.effect("falls back to the parent record when the child thread was deleted", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const dispatched: Array<string> = [];
+    const reads: Array<{ readonly threadId: ThreadId; readonly fields: ReadonlyArray<string> }> =
+      [];
+    const layerTest = subagentHandoffLayer({
+      dispatched,
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: DateTime.makeUnsafe("2026-11-11T02:00:00.000Z"),
+      }),
+      getThreadRecords: (threadId, fields) => {
+        reads.push({ threadId, fields });
+        return {
+          thread: { id: threadId },
+          subagents: [fixture.taskA],
+          contextTransfers: fixture.transfers,
+        };
+      },
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: fixture.taskA.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toMatchObject({
+      childThreadState: "deleted",
+      childRunId: null,
+      roundAssociation: "unavailable",
+      executedModel: null,
+      result: { source: "parent_record", messageId: null, turnItemId: null },
+    });
+    expect(handoff?.result.body.text).toBe("Parent delivery A");
+    expect(reads.every((read) => read.threadId === fixture.parentThreadId)).toBe(true);
+    expect(dispatched).toEqual([]);
+  }),
+);
+
+it.effect("does not present commentary as a final result for an active round", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const activeTask = {
+      ...fixture.taskA,
+      result: null,
+      status: "running" as const,
+      completedAt: null,
+    };
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: null,
+      }),
+      getThreadRecords: (threadId) => ({
+        thread: { id: threadId },
+        subagents: [activeTask],
+        contextTransfers: fixture.transfers,
+        runs: [fixture.runA, fixture.runB],
+        providerThreads: [fixture.providerThread],
+        providerTurns: [fixture.providerTurn],
+        messages: [fixture.final.message, fixture.laterCommentary.message],
+        turnItems: [fixture.final.turnItem, fixture.laterCommentary.turnItem],
+      }),
+    });
+    const handoff = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* service.getSubagentHandoff({
+        parentThreadId: fixture.parentThreadId,
+        subagentId: fixture.taskA.id,
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoff).toMatchObject({
+      executionStatus: "running",
+      result: {
+        source: null,
+        body: { availability: "unavailable", text: "" },
+      },
+      navigation: { kind: "round", messageId: fixture.runA.userMessageId },
+    });
+  }),
+);
+
+it.effect("pages a handoff body, restarts a changed revision, and reports a stale offset", () =>
+  Effect.gen(function* () {
+    const fixture = handoffFixture();
+    const task = {
+      ...fixture.taskA,
+      prompt: "0123456789",
+      result: "abcdefghij",
+      status: "running" as const,
+      completedAt: null,
+    };
+    const deliveryRevision = `parent:${task.id}:none:${DateTime.formatIso(task.updatedAt)}`;
+    const layerTest = subagentHandoffLayer({
+      dispatched: [],
+      getThreadShell: () => ({
+        id: fixture.childThreadId,
+        lineage: {
+          parentThreadId: fixture.parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: fixture.parentThreadId,
+        },
+        deletedAt: DateTime.makeUnsafe("2026-11-11T02:00:00.000Z"),
+      }),
+      getThreadRecords: (threadId) => ({
+        thread: { id: threadId },
+        subagents: [task],
+      }),
+    });
+    const handoffs = yield* Effect.gen(function* () {
+      const service = yield* ThreadManagementService.ThreadManagementService;
+      return yield* Effect.all([
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          maxChars: 4,
+        }),
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          promptOffset: 4,
+          maxChars: 4,
+        }),
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          promptOffset: 20,
+          maxChars: 4,
+        }),
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          deliveryOffset: 4,
+          revisions: {
+            prompt: `prompt:${task.id}`,
+            result: "result:unchanged",
+            delivery: "parent:stale",
+          },
+          maxChars: 4,
+        }),
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          deliveryOffset: 4,
+          revisions: {
+            prompt: `prompt:${task.id}`,
+            result: "result:unchanged",
+            delivery: deliveryRevision,
+          },
+          maxChars: 4,
+        }),
+        service.getSubagentHandoff({
+          parentThreadId: fixture.parentThreadId,
+          subagentId: task.id,
+          resultOffset: 4,
+          revisions: {
+            prompt: `prompt:${task.id}`,
+            result: deliveryRevision,
+            delivery: deliveryRevision,
+          },
+          maxChars: 4,
+        }),
+      ]);
+    }).pipe(Effect.provide(layerTest));
+
+    expect(handoffs[0]?.prompt).toMatchObject({
+      availability: "available",
+      text: "0123",
+      nextOffset: 4,
+    });
+    expect(handoffs[0]?.result.body).toMatchObject({
+      availability: "available",
+      text: "abcd",
+      nextOffset: 4,
+    });
+    expect(handoffs[1]?.prompt).toMatchObject({
+      availability: "available",
+      text: "4567",
+      nextOffset: 8,
+    });
+    expect(handoffs[2]?.prompt).toMatchObject({
+      availability: "unavailable",
+      text: "",
+      nextOffset: null,
+    });
+    expect(handoffs[3]?.deliveryResult).toMatchObject({
+      availability: "available",
+      revision: deliveryRevision,
+      text: "abcd",
+      nextOffset: 4,
+    });
+    expect(handoffs[4]?.deliveryResult).toMatchObject({
+      availability: "available",
+      text: "efgh",
+      nextOffset: 8,
+    });
+    expect(handoffs[5]?.result.body).toMatchObject({
+      availability: "available",
+      revision: deliveryRevision,
+      text: "efgh",
+      nextOffset: 8,
+    });
   }),
 );

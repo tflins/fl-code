@@ -10,6 +10,7 @@ import type {
   OrchestrationV2DomainEvent,
   OrchestrationV2ProviderRef,
   OrchestrationV2Run,
+  OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
   ProviderInstanceId,
@@ -187,14 +188,161 @@ export function withExecutedModelNote(
     : `Requested model ${requestedModel}; the provider reported running ${executedModel}.\n\n${result}`;
 }
 
-export function subagentResultForRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
+export type DelegatedTaskRunAssociation =
+  | "run_delegated_task_id"
+  | "spawn_transfer"
+  | "unavailable";
+
+/**
+ * An original task has no run binding before its first follow-up, so its spawn transfer is the
+ * only reliable anchor. Its restart continuations inherit no task binding in that case, so follow
+ * only explicit persisted continuation edges from that run. Follow-up tasks must use their own
+ * delegatedTaskId; the shared spawn transfer belongs to the original task.
+ */
+export function resolveDelegatedTaskRunChain(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "contextTransfers">,
+  task: Pick<OrchestrationV2Subagent, "id" | "threadId" | "childThreadId">,
+): {
+  readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  readonly run: OrchestrationV2Run | undefined;
+  readonly association: DelegatedTaskRunAssociation;
+} {
+  const taskRuns = projection.runs
+    .filter((run) => run.delegatedTaskId === task.id)
+    .toSorted((left, right) => left.ordinal - right.ordinal);
+  if (taskRuns.length > 0) {
+    return {
+      runs: taskRuns,
+      run: taskRuns.at(-1),
+      association: "run_delegated_task_id",
+    };
+  }
+  const original =
+    projection.thread.forkedFrom?.type === "node" &&
+    projection.thread.forkedFrom.nodeId === task.id;
+  if (!original || task.childThreadId === null) {
+    return { runs: [], run: undefined, association: "unavailable" };
+  }
+  const targetRunIds = new Set(
+    projection.contextTransfers.flatMap((transfer) =>
+      transfer.type === "subagent_spawn" &&
+      transfer.sourceThreadId === task.threadId &&
+      transfer.targetThreadId === task.childThreadId &&
+      transfer.targetRunId !== null &&
+      projection.runs.some((run) => run.id === transfer.targetRunId)
+        ? [transfer.targetRunId]
+        : [],
+    ),
+  );
+  if (targetRunIds.size !== 1) {
+    return { runs: [], run: undefined, association: "unavailable" };
+  }
+  const runId = targetRunIds.values().next().value;
+  const first = projection.runs.find((run) => run.id === runId);
+  if (
+    first === undefined ||
+    (first.delegatedTaskId !== undefined && first.delegatedTaskId !== task.id)
+  ) {
+    return { runs: [], run: undefined, association: "unavailable" };
+  }
+  const runs = [first];
+  const visited = new Set([first.id]);
+  let current = first;
+  for (let hops = 0; hops < projection.runs.length; hops++) {
+    const continuations = projection.runs.filter(
+      (candidate) =>
+        !visited.has(candidate.id) &&
+        (candidate.delegatedTaskId === undefined || candidate.delegatedTaskId === task.id) &&
+        (candidate.restartContinuationOfRunId === current.id ||
+          candidate.usageLimitContinuationOfRunId === current.id),
+    );
+    if (continuations.length !== 1) break;
+    current = continuations[0]!;
+    runs.push(current);
+    visited.add(current.id);
+  }
+  return {
+    runs,
+    run: runs.at(-1),
+    association: "spawn_transfer",
+  };
+}
+
+export function subagentOriginalResultForRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
   run: OrchestrationV2Run,
+  anchor?: {
+    readonly messageId?: MessageId | null | undefined;
+    readonly turnItemId?: TurnItemId | null | undefined;
+  },
 ): {
   readonly text: string;
-  readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
-  readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
-} {
+  readonly messageId: MessageId | null;
+  readonly turnItemId: TurnItemId | null;
+  readonly updatedAt: DateTime.Utc;
+} | null {
+  const anchoredTurnItemId = anchor?.turnItemId ?? null;
+  const anchoredMessageId = anchor?.messageId ?? null;
+  if (anchoredTurnItemId !== null) {
+    const item = projection.turnItems.find(
+      (
+        candidate,
+      ): candidate is Extract<
+        OrchestrationV2TurnItem,
+        { readonly type: "assistant_message" | "error" }
+      > =>
+        candidate.id === anchoredTurnItemId &&
+        candidate.runId === run.id &&
+        (candidate.type === "assistant_message" || candidate.type === "error"),
+    );
+    if (item === undefined) return null;
+    if (item.type === "error") {
+      return {
+        text: item.failure.message,
+        messageId: null,
+        turnItemId: item.id,
+        updatedAt: item.updatedAt,
+      };
+    }
+    const message: OrchestrationV2ConversationMessage | undefined =
+      item.messageId === null
+        ? undefined
+        : projection.messages.find(
+            (candidate) =>
+              candidate.id === item.messageId &&
+              candidate.runId === run.id &&
+              candidate.role === "assistant",
+          );
+    if (anchoredMessageId !== null && message?.id !== anchoredMessageId) return null;
+    const text = message?.text.trim() ? message.text : item.text;
+    return {
+      text,
+      messageId: message?.id ?? item.messageId ?? null,
+      turnItemId: item.id,
+      updatedAt: message?.updatedAt ?? item.updatedAt,
+    };
+  }
+  if (anchoredMessageId !== null) {
+    const message = projection.messages.find(
+      (candidate) =>
+        candidate.id === anchoredMessageId &&
+        candidate.runId === run.id &&
+        candidate.role === "assistant",
+    );
+    if (message === undefined) return null;
+    const turnItem = projection.turnItems.find(
+      (candidate) =>
+        candidate.type === "assistant_message" &&
+        candidate.messageId === message.id &&
+        candidate.runId === run.id,
+    );
+    return {
+      text: message.text,
+      messageId: message.id,
+      turnItemId: turnItem?.id ?? null,
+      updatedAt: message.updatedAt,
+    };
+  }
   const turnItem =
     projection.turnItems
       .filter(
@@ -230,7 +378,33 @@ export function subagentResultForRun(
   const text =
     (failure?.type === "error" ? failure.failure.message : undefined) ??
     message?.text ??
-    turnItem?.text ??
+    turnItem?.text;
+  return text === undefined
+    ? null
+    : {
+        text,
+        messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
+        turnItemId: failure?.id ?? turnItem?.id ?? null,
+        updatedAt:
+          failure?.updatedAt ??
+          message?.updatedAt ??
+          turnItem?.updatedAt ??
+          run.completedAt ??
+          run.requestedAt,
+      };
+}
+
+export function subagentResultForRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
+  run: OrchestrationV2Run,
+): {
+  readonly text: string;
+  readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
+  readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
+} {
+  const original = subagentOriginalResultForRun(projection, run);
+  const text =
+    original?.text ??
     (run.status === "completed"
       ? "Child task completed without an assistant result."
       : `Child task ended with status ${run.status}.`);
@@ -243,8 +417,8 @@ export function subagentResultForRun(
       executedModel === undefined
         ? text
         : withExecutedModelNote(text, run.modelSelection.model, executedModel),
-    messageId: failure === undefined ? (message?.id ?? turnItem?.messageId ?? null) : null,
-    turnItemId: failure?.id ?? turnItem?.id ?? null,
+    messageId: original?.messageId ?? null,
+    turnItemId: original?.turnItemId ?? null,
   };
 }
 

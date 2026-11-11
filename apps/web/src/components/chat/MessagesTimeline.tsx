@@ -126,7 +126,11 @@ import {
   McpAppTimelineRow,
 } from "./TimelineAssistantRows";
 import { V2EventTimelineRow } from "./TimelineV2EventRow";
-import { startTimelinePositionRestore } from "./useTimelinePositionRestore";
+import {
+  measuredEndOffset,
+  settleListScroll,
+  startTimelinePositionRestore,
+} from "./useTimelinePositionRestore";
 import {
   attachTimelineViewport,
   nextListOpening,
@@ -211,6 +215,7 @@ export interface MessagesTimelineHistoryControls {
   readonly loading: boolean;
   readonly error: string | null;
   readonly onLoadEarlier: (throughEntryId?: string) => void;
+  readonly onLoadThrough?: (throughEntryId: string) => void;
 }
 
 interface MessagesTimelineProps {
@@ -295,6 +300,8 @@ interface MessagesTimelineProps {
   skills?: ReadonlyArray<ServerProviderSkill>;
   runs: ReadonlyArray<HandoffTimelineRun>;
   anchorMessageId: MessageId | null;
+  jumpToMessageId?: MessageId | null;
+  onJumpedToMessage?: (messageId: MessageId) => void;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
   contentInsetEndAdjustment: number;
@@ -394,6 +401,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   skills = EMPTY_TIMELINE_SKILLS,
   runs: runsProp,
   anchorMessageId,
+  jumpToMessageId = null,
+  onJumpedToMessage,
   onAnchorReady,
   onAnchorSizeChanged,
   contentInsetEndAdjustment,
@@ -428,6 +437,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const [positionedThreadKey, setPositionedThreadKey] = useState<string | null>(() =>
     listState.rememberedPosition?.atEnd === false || findOpen ? null : listIdentityKey,
   );
+  const [jumpPositionedThreadKey, setJumpPositionedThreadKey] = useState<string | null>(null);
   const restoringThreadPosition = positionedThreadKey !== listIdentityKey;
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const [settlingListIdentity, setSettlingListIdentity] = useState<string | null>(listIdentityKey);
@@ -451,6 +461,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
       findOpenAtOpening: findOpen,
     });
     setPositionedThreadKey(null);
+    setJumpPositionedThreadKey(null);
     setSettlingListIdentity(listIdentityKey);
     // A viewer pinned in another thread must not keep live follow off here,
     // nor when that thread comes back.
@@ -669,6 +680,13 @@ const ConversationTimeline = memo(function ConversationTimeline({
     revealedMessageId,
   });
   const rows = useStableRows(rawRows, listIdentityKey);
+  const jumpRow =
+    jumpToMessageId === null
+      ? undefined
+      : rows.find((row) => row.kind === "message" && row.message.id === jumpToMessageId);
+  const jumpRowIndex = jumpRow === undefined ? -1 : rows.indexOf(jumpRow);
+  const jumpPending = jumpToMessageId !== null;
+  const jumpOwnsOpening = jumpPending || jumpPositionedThreadKey === listIdentityKey;
   const matchedApprovalRequestIds = new Set<string>();
   for (const row of pendingApprovalRequestIds.size > 0 ? rows : []) {
     const entries =
@@ -725,12 +743,14 @@ const ConversationTimeline = memo(function ConversationTimeline({
       listOpenedOn,
       rememberedPosition,
       citationPending: citationRequest !== null,
+      jumpPending,
       releaseForFind: findOpenAtOpening,
       onPositioned: setPositionedThreadKey,
     });
   }, [
     citationRequest,
     findOpenAtOpening,
+    jumpPending,
     listIdentityKey,
     listOpenedOn,
     listRef,
@@ -765,6 +785,108 @@ const ConversationTimeline = memo(function ConversationTimeline({
     onCitationListLoad();
     setFindListReady(true);
   };
+  const jumpedMessageRef = useRef<MessageId | null>(null);
+  const cancelJumpRef = useRef<(() => void) | null>(null);
+  const jumpIdentityRef = useRef(listIdentityKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels a pending scroll when the list unmounts
+  useEffect(() => {
+    return () => {
+      cancelJumpRef.current?.();
+      cancelJumpRef.current = null;
+      jumpedMessageRef.current = null;
+    };
+  }, []);
+  // A task handoff opens the child at its recorded message after history reaches that row.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the virtualized list to a requested historical message
+  useEffect(() => {
+    if (jumpIdentityRef.current !== listIdentityKey) {
+      cancelJumpRef.current?.();
+      cancelJumpRef.current = null;
+      jumpedMessageRef.current = null;
+      jumpIdentityRef.current = listIdentityKey;
+    }
+    if (jumpToMessageId === null) {
+      jumpedMessageRef.current = null;
+      cancelJumpRef.current?.();
+      cancelJumpRef.current = null;
+      return;
+    }
+    if (jumpedMessageRef.current !== null && jumpedMessageRef.current !== jumpToMessageId) {
+      cancelJumpRef.current?.();
+      cancelJumpRef.current = null;
+      jumpedMessageRef.current = null;
+    }
+    if (jumpedMessageRef.current === jumpToMessageId || !findListReady) return;
+    const list = listRef.current;
+    if (jumpRow === undefined || jumpRowIndex < 0 || list === null) return;
+    const messageId = jumpToMessageId;
+    const targetRowId = jumpRow.id;
+    jumpedMessageRef.current = jumpToMessageId;
+    setJumpPositionedThreadKey(listIdentityKey);
+    navigateTimeline();
+    const viewport = viewportRef.current;
+    let cancelled = false;
+    let releaseScrollHold: (() => void) | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const release = () => {
+      unsubscribe?.();
+      releaseScrollHold?.();
+    };
+    const cancel = () => {
+      cancelled = true;
+      release();
+    };
+    releaseScrollHold = viewport?.holdProgrammaticScroll();
+    unsubscribe = viewport?.subscribe(cancel);
+    cancelJumpRef.current = cancel;
+    void (async () => {
+      try {
+        await list.scrollToIndex({
+          index: jumpRowIndex,
+          animated: false,
+          viewPosition: 0,
+          viewPositionFallback: "start",
+          viewOffset: 24,
+        });
+        if (cancelled) return;
+        await settleListScroll(
+          list,
+          (element) => {
+            const state = list.getState();
+            const rowIndex = state.indexByKey(targetRowId);
+            const row = rowIndex === undefined ? undefined : state.elementAtIndex(rowIndex);
+            if (!row) return undefined;
+            return Math.max(
+              0,
+              Math.min(
+                element.scrollTop +
+                  row.getBoundingClientRect().top -
+                  element.getBoundingClientRect().top -
+                  24,
+                measuredEndOffset(element),
+              ),
+            );
+          },
+          () => cancelled || jumpedMessageRef.current !== messageId || listRef.current !== list,
+        );
+      } finally {
+        if (cancelJumpRef.current === cancel) cancelJumpRef.current = null;
+        release();
+      }
+      if (cancelled || jumpedMessageRef.current !== messageId) return;
+      onJumpedToMessage?.(messageId);
+    })();
+  }, [
+    findListReady,
+    jumpRow,
+    jumpRowIndex,
+    jumpToMessageId,
+    listIdentityKey,
+    listRef,
+    navigateTimeline,
+    onJumpedToMessage,
+    viewportRef,
+  ]);
   const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
   // Every full-screen viewer reports false when it unmounts, so a row that leaves the list
   // while full screen releases its pin too.
@@ -779,6 +901,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const alwaysRenderKeys = [
     ...(firstMessageRow ? [firstMessageRow.id] : []),
     ...(lastMessageRow && lastMessageRow !== firstMessageRow ? [lastMessageRow.id] : []),
+    ...(jumpPending && jumpRow ? [jumpRow.id] : []),
     ...(citationAlwaysRender?.keys ?? []),
     ...(fullscreenAppRowId === null ? [] : [fullscreenAppRowId]),
     ...new Set(
@@ -1294,7 +1417,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
               renderItem={renderItem}
               estimatedItemSize={90}
               initialScrollAtEnd={
-                !findActive && citationRequest === null && rememberedPosition?.atEnd !== false
+                !jumpOwnsOpening &&
+                !findActive &&
+                citationRequest === null &&
+                rememberedPosition?.atEnd !== false
               }
               // Legend needs a data refresh to mount new pins without a scroll event.
               dataVersion={`${readyCitationRequest?.key ?? listIdentityKey}:${alwaysRenderKeys.join(",")}`}
@@ -1304,6 +1430,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               contentInsetEndAdjustment={anchoredEndSpace ? contentInsetEndAdjustment : 0}
               maintainScrollAtEnd={
                 citationPositioning ||
+                jumpPending ||
                 (restoringThreadPosition && rememberedPosition?.atEnd === false) ||
                 anchoredEndSpace ||
                 !liveFollowEnabled ||
@@ -1316,6 +1443,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
               maintainVisibleContentPosition={
                 findActive ||
                 citationPositioning ||
+                jumpPending ||
                 (restoringThreadPosition && rememberedPosition?.atEnd === false)
                   ? false
                   : maintainVisibleContentPosition

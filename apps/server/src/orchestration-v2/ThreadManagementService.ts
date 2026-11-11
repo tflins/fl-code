@@ -21,11 +21,17 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2Command,
+  type OrchestrationV2ContextTransfer,
   type OrchestrationV2GetTurnItemResult,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2SubagentHandoff,
+  type OrchestrationV2SubagentHandoffBody,
+  type OrchestrationV2SubagentHandoffInput,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -38,10 +44,16 @@ import {
   resolveProjectProviderInstanceEnabled,
   RunId,
   type ScheduledTaskId,
+  SUBAGENT_HANDOFF_MAX_CHARS,
   ThreadId,
   type TurnItemId,
+  latestProviderTurnForAttempt,
 } from "@t3tools/contracts";
-import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
+import {
+  delegatedTaskProgress,
+  resolveDelegatedTaskRunChain,
+  subagentOriginalResultForRun,
+} from "@t3tools/provider-core/server/subagentProjection";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
@@ -49,6 +61,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -382,6 +395,9 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly itemId: TurnItemId;
   }) => Effect.Effect<OrchestrationV2GetTurnItemResult, Orchestrator.OrchestratorV2Error>;
+  readonly getSubagentHandoff: (
+    input: OrchestrationV2SubagentHandoffInput,
+  ) => Effect.Effect<OrchestrationV2SubagentHandoff | null, Orchestrator.OrchestratorV2Error>;
   readonly getThreadRecords: Orchestrator.OrchestratorV2["Service"]["getThreadRecords"];
   readonly getThreadProjection: (
     threadId: ThreadId,
@@ -567,6 +583,143 @@ function latestSteerableRun(
     .toSorted((left, right) => right.ordinal - left.ordinal)[0];
 }
 
+function subagentHandoffBody(
+  text: string | null,
+  revision: string,
+  offset: number,
+  maxChars: number,
+  expectedRevision?: string,
+): OrchestrationV2SubagentHandoffBody {
+  if (text === null) {
+    return {
+      availability: "unavailable",
+      revision,
+      text: "",
+      truncated: false,
+      nextOffset: null,
+    };
+  }
+  const requestedOffset =
+    offset > 0 && expectedRevision !== undefined && expectedRevision !== revision ? 0 : offset;
+  if (requestedOffset > text.length) {
+    return {
+      availability: "unavailable",
+      revision,
+      text: "",
+      truncated: false,
+      nextOffset: null,
+    };
+  }
+  let start = Math.min(requestedOffset, text.length);
+  if (start > 0 && start < text.length) {
+    const previous = text.charCodeAt(start - 1);
+    const current = text.charCodeAt(start);
+    if (previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff) {
+      start -= 1;
+    }
+  }
+  let end = Math.min(start + maxChars, text.length);
+  if (end < text.length) {
+    const previous = text.charCodeAt(end - 1);
+    const current = text.charCodeAt(end);
+    if (previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff) {
+      end = end - 1 > start ? end - 1 : Math.min(start + 2, text.length);
+    }
+  }
+  const truncated = end < text.length;
+  return {
+    availability: "available",
+    revision,
+    text: text.slice(start, end),
+    truncated,
+    nextOffset: truncated ? end : null,
+  };
+}
+
+function parentResultRevision(task: OrchestrationV2Subagent): string {
+  return `parent:${task.id}:${
+    task.completedAt === null ? "none" : DateTime.formatIso(task.completedAt)
+  }:${DateTime.formatIso(task.updatedAt)}`;
+}
+
+function resultTransferCandidatesForTask(
+  transfers: ReadonlyArray<OrchestrationV2ContextTransfer>,
+  childThreadId: ThreadId,
+  task: Pick<OrchestrationV2Subagent, "threadId" | "runId">,
+): ReadonlyArray<OrchestrationV2ContextTransfer> {
+  return transfers.filter(
+    (transfer) =>
+      transfer.type === "subagent_result" &&
+      transfer.sourceThreadId === childThreadId &&
+      transfer.targetThreadId === task.threadId &&
+      transfer.targetRunId === task.runId,
+  );
+}
+
+function resultTransferForTask(input: {
+  readonly child: Pick<
+    OrchestrationV2ThreadProjection,
+    "thread" | "providerThreads" | "providerTurns"
+  >;
+  readonly runs: ReadonlyArray<OrchestrationV2Run>;
+  readonly candidates: ReadonlyArray<OrchestrationV2ContextTransfer>;
+}): OrchestrationV2ContextTransfer | undefined {
+  return input.candidates
+    .filter((transfer) => {
+      const source = transfer.sourcePoint;
+      const run = input.runs.find((candidate) => candidate.id === source.runId);
+      if (
+        source.threadId !== input.child.thread.id ||
+        source.runId === undefined ||
+        run === undefined ||
+        (transfer.sourceProviderInstanceId !== null &&
+          transfer.sourceProviderInstanceId !== run.providerInstanceId)
+      ) {
+        return false;
+      }
+      if (source.checkpointId !== undefined && source.checkpointId !== run.checkpointId) {
+        return false;
+      }
+      if (source.providerThreadRef !== undefined) {
+        const providerThread = input.child.providerThreads.find(
+          (candidate) => candidate.id === run.providerThreadId,
+        );
+        if (
+          providerThread === undefined ||
+          !Equal.equals(providerThread.nativeThreadRef, source.providerThreadRef)
+        ) {
+          return false;
+        }
+      }
+      if (source.providerTurnRef !== undefined) {
+        const providerTurn = input.child.providerTurns.find(
+          (candidate) =>
+            candidate.providerThreadId === run.providerThreadId &&
+            Equal.equals(candidate.nativeTurnRef, source.providerTurnRef),
+        );
+        if (providerTurn === undefined) return false;
+      }
+      return true;
+    })
+    .toSorted(
+      (left, right) =>
+        DateTime.toEpochMillis(left.createdAt) - DateTime.toEpochMillis(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    )
+    .at(-1);
+}
+
+function hasResultTransferForRunChain(
+  candidates: ReadonlyArray<OrchestrationV2ContextTransfer>,
+  runs: ReadonlyArray<OrchestrationV2Run>,
+): boolean {
+  return candidates.some(
+    (transfer) =>
+      transfer.sourcePoint.runId !== undefined &&
+      runs.some((run) => run.id === transfer.sourcePoint.runId),
+  );
+}
+
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 const FORCE_STOP_REASON = "Force stopped by user";
 const FORCE_STOP_RELEASE_WAIT = "10 seconds";
@@ -665,6 +818,222 @@ const make = Effect.gen(function* () {
     ensureProjectionTranscript(threadId).pipe(
       Effect.andThen(orchestrator.getThreadProjection(threadId)),
     );
+
+  const getSubagentHandoff: ThreadManagementServiceShape["getSubagentHandoff"] = Effect.fn(
+    "ThreadManagementService.getSubagentHandoff",
+  )(function* (input) {
+    const maxChars = Math.max(
+      1,
+      Math.min(input.maxChars ?? SUBAGENT_HANDOFF_MAX_CHARS, SUBAGENT_HANDOFF_MAX_CHARS),
+    );
+    const parent = yield* orchestrator.getThreadRecords(input.parentThreadId, ["subagents"], {
+      subagentIds: [input.subagentId],
+    });
+    const task = parent.subagents.find(
+      (candidate) =>
+        candidate.id === input.subagentId &&
+        candidate.threadId === input.parentThreadId &&
+        candidate.origin === "app_owned",
+    );
+    if (task === undefined) return null;
+
+    let childThreadState: OrchestrationV2SubagentHandoff["childThreadState"] = "unknown";
+    let childRun: OrchestrationV2Run | undefined;
+    let childRunAssociation: OrchestrationV2SubagentHandoff["roundAssociation"] = "unavailable";
+    let providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn> = [];
+    let rawResult: ReturnType<typeof subagentOriginalResultForRun> = null;
+    const target: OrchestrationV2SubagentHandoff["target"] =
+      task.childThreadId !== null
+        ? { kind: "local", threadId: task.childThreadId }
+        : task.remoteChild === undefined
+          ? null
+          : {
+              kind: "remote",
+              environmentId: task.remoteChild.environmentId,
+              threadId: task.remoteChild.threadId,
+              runId: task.remoteChild.runId ?? null,
+            };
+
+    if (task.childThreadId !== null) {
+      const childShell = yield* orchestrator.getThreadShell(task.childThreadId);
+      const belongsToTask =
+        childShell !== null &&
+        childShell.lineage.relationshipToParent === "subagent" &&
+        childShell.lineage.parentThreadId === task.threadId;
+      childThreadState =
+        childShell === null
+          ? "missing"
+          : childShell.deletedAt !== null
+            ? "deleted"
+            : belongsToTask
+              ? "available"
+              : "unknown";
+      if (childThreadState === "available") {
+        const child = yield* orchestrator.getThreadRecords(task.childThreadId, [
+          "runs",
+          "contextTransfers",
+        ]);
+        const runChain = resolveDelegatedTaskRunChain(child, task);
+        const providerThreadIds = [
+          ...new Set(
+            runChain.runs.flatMap((run) =>
+              run.providerThreadId === null ? [] : [run.providerThreadId],
+            ),
+          ),
+        ];
+        const providerRecords =
+          runChain.runs.length === 0
+            ? { providerThreads: [], providerTurns: [] }
+            : yield* orchestrator.getThreadRecords(
+                task.childThreadId,
+                ["providerThreads", "providerTurns"],
+                {
+                  providerThreadIds,
+                  providerTurnThreadIds: providerThreadIds,
+                },
+              );
+        providerTurns = providerRecords.providerTurns;
+        const parentTransfers =
+          task.result === null
+            ? []
+            : (yield* orchestrator.getThreadRecords(input.parentThreadId, ["contextTransfers"], {
+                contextTransferTypes: ["subagent_result"],
+                contextTransferSourceThreadIds: [task.childThreadId],
+                contextTransferTargetThreadIds: [input.parentThreadId],
+                ...(task.runId === null ? {} : { contextTransferTargetRunIds: [task.runId] }),
+              })).contextTransfers;
+        const candidates = resultTransferCandidatesForTask(
+          parentTransfers,
+          task.childThreadId,
+          task,
+        );
+        const resultTransfer = resultTransferForTask({
+          child: {
+            thread: child.thread,
+            providerThreads: providerRecords.providerThreads,
+            providerTurns: providerRecords.providerTurns,
+          },
+          runs: runChain.runs,
+          candidates,
+        });
+        if (
+          resultTransfer === undefined &&
+          hasResultTransferForRunChain(candidates, runChain.runs)
+        ) {
+          childRun = undefined;
+          childRunAssociation = "unavailable";
+        } else {
+          childRun =
+            resultTransfer?.sourcePoint.runId === undefined
+              ? runChain.run
+              : runChain.runs.find((run) => run.id === resultTransfer.sourcePoint.runId);
+          childRunAssociation = runChain.association;
+        }
+        if (childRun !== undefined) {
+          if (task.result !== null) {
+            const resultRecords = yield* orchestrator.getThreadRecords(
+              task.childThreadId,
+              ["messages", "turnItems"],
+              {
+                messageRoles: ["assistant"],
+                messageRunIds: [childRun.id],
+                turnItemRunId: childRun.id,
+                turnItemTypes: ["assistant_message", "error"],
+              },
+            );
+            const turnItemId = resultTransfer?.sourcePoint.turnItemId;
+            rawResult = subagentOriginalResultForRun(
+              resultRecords,
+              childRun,
+              turnItemId === undefined ? undefined : { turnItemId },
+            );
+          }
+        }
+      }
+    }
+
+    const prompt = subagentHandoffBody(
+      task.promptOmitted === true ? null : task.prompt,
+      `prompt:${task.id}`,
+      input.promptOffset ?? 0,
+      maxChars,
+      input.revisions?.prompt,
+    );
+    const deliveryText = task.resultOmitted === true ? null : task.result;
+    const deliveryResult = subagentHandoffBody(
+      deliveryText,
+      parentResultRevision(task),
+      input.deliveryOffset ?? 0,
+      maxChars,
+      input.revisions?.delivery,
+    );
+    const parentResultBody = subagentHandoffBody(
+      deliveryText,
+      parentResultRevision(task),
+      input.resultOffset ?? 0,
+      maxChars,
+      input.revisions?.result,
+    );
+    const usableRawResult =
+      rawResult !== null && rawResult.text.trim().length > 0 ? rawResult : null;
+    const resultBody =
+      usableRawResult === null
+        ? parentResultBody
+        : subagentHandoffBody(
+            usableRawResult.text,
+            `child:${childRun?.id ?? "unknown"}:${usableRawResult.turnItemId ?? usableRawResult.messageId ?? "result"}:${DateTime.formatIso(usableRawResult.updatedAt)}`,
+            input.resultOffset ?? 0,
+            maxChars,
+            input.revisions?.result,
+          );
+    const resultSource =
+      usableRawResult !== null
+        ? ("child_run" as const)
+        : deliveryResult.availability === "available"
+          ? ("parent_record" as const)
+          : null;
+    const navigation =
+      usableRawResult?.messageId !== null && usableRawResult?.messageId !== undefined
+        ? { kind: "result" as const, messageId: usableRawResult.messageId }
+        : childRun?.userMessageId === undefined
+          ? null
+          : { kind: "round" as const, messageId: childRun.userMessageId };
+    const requestedModel =
+      task.modelSelection === undefined && task.model === null
+        ? null
+        : {
+            model: task.modelSelection?.model ?? task.model,
+            selection: task.modelSelection ?? null,
+          };
+    const executedModel = latestProviderTurnForAttempt(
+      providerTurns,
+      childRun?.activeAttemptId,
+    )?.model;
+
+    return {
+      parentThreadId: task.threadId,
+      subagentId: task.id,
+      parentRunId: task.runId,
+      executionStatus: task.status,
+      completionDelivery: task.completionDelivery ?? null,
+      requestedModel,
+      executedModel: executedModel ?? null,
+      prompt,
+      result: {
+        body: resultBody,
+        source: resultSource,
+        messageId: usableRawResult?.messageId ?? null,
+        turnItemId: usableRawResult?.turnItemId ?? null,
+      },
+      deliveryResult,
+      childRunId: childRun?.id ?? null,
+      roundAssociation: childRunAssociation,
+      target,
+      navigation,
+      childThreadState,
+      updatedAt: task.updatedAt,
+    } satisfies OrchestrationV2SubagentHandoff;
+  });
 
   const getCheckpointContext: ThreadManagementServiceShape["getCheckpointContext"] = (threadId) =>
     ensureProjectionTranscript(threadId).pipe(
@@ -1581,6 +1950,7 @@ const make = Effect.gen(function* () {
         Effect.map((item) => ({ item: item === null ? null : projectTurnItemForDetail(item) })),
       );
     }),
+    getSubagentHandoff,
     getThreadRecords: Effect.fn("ThreadManagementService.getThreadRecords")(
       function (threadId, fields, filter) {
         return ensureProjectionTranscript(threadId).pipe(

@@ -189,6 +189,7 @@ function run(threadId: ThreadId, id: RunId, ordinal: number, userMessageId: stri
 export interface FakeThread {
   /** Makes this a side chat of that thread. */
   readonly sideChatOf?: ThreadId;
+  readonly hasMoreHistory?: boolean;
   readonly id: ThreadId;
   readonly title: string;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
@@ -374,7 +375,13 @@ const handlers: Record<string, (input: never) => unknown> = {
     if (!thread) return Stream.never;
     return subscribe<OrchestrationV2ThreadStreamItem>(
       [
-        { kind: "snapshot", snapshotSequence: sequence, projection: projectionOf(thread) },
+        {
+          kind: "snapshot",
+          snapshotSequence: sequence,
+          projection: projectionOf(thread),
+          historyCursor: thread.hasMoreHistory ? "older-history" : null,
+          hasMoreHistory: thread.hasMoreHistory ?? false,
+        },
         { kind: "synchronized" },
       ],
       (queue) => {

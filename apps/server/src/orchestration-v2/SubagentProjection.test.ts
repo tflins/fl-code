@@ -22,6 +22,8 @@ import * as Layer from "effect/Layer";
 import {
   makeSubagentChildThread,
   delegatedTaskProgress,
+  resolveDelegatedTaskRunChain,
+  subagentOriginalResultForRun,
   subagentResultForRun,
   makeSubagentConversationArtifacts,
   endOrphanedNativeSubagent,
@@ -421,6 +423,169 @@ it("orders a task's assistant messages by turn item, not by timestamps", () => {
     ).text,
     "Requested model gpt-5.4; the provider reported running gpt-5.4-mini.\n\nAll steps passed.",
   );
+});
+
+it("keeps each follow-up task on its own delegated run", () => {
+  const { projection, run } = taskFixture();
+  const taskA = NodeId.make("node:task-a");
+  const taskB = NodeId.make("node:task-b");
+  const runA = { ...run, id: RunId.make("run:task-a"), delegatedTaskId: taskA };
+  const runB = {
+    ...run,
+    id: RunId.make("run:task-b"),
+    ordinal: 2,
+    delegatedTaskId: taskB,
+  };
+  const child = {
+    ...projection,
+    thread: {
+      ...projection.thread,
+      id: childThreadId,
+      forkedFrom: { type: "node" as const, nodeId: taskA },
+    },
+    runs: [runA, runB],
+  };
+
+  const first = resolveDelegatedTaskRunChain(child, {
+    id: taskA,
+    threadId: parentThreadId,
+    childThreadId,
+  });
+  const second = resolveDelegatedTaskRunChain(child, {
+    id: taskB,
+    threadId: parentThreadId,
+    childThreadId,
+  });
+
+  assert.deepEqual(
+    first.runs.map((entry) => entry.id),
+    [runA.id],
+  );
+  assert.deepEqual(
+    second.runs.map((entry) => entry.id),
+    [runB.id],
+  );
+  assert.equal(second.run?.id, runB.id);
+});
+
+it("keeps restart continuations in one task chain", () => {
+  const { projection, run } = taskFixture();
+  const taskId = NodeId.make("node:task-continuation");
+  const first = { ...run, id: RunId.make("run:continuation-1"), delegatedTaskId: taskId };
+  const second = {
+    ...run,
+    id: RunId.make("run:continuation-2"),
+    ordinal: 2,
+    restartContinuationOfRunId: first.id,
+    delegatedTaskId: taskId,
+  };
+  const resolved = resolveDelegatedTaskRunChain(
+    { ...projection, runs: [first, second] },
+    { id: taskId, threadId: parentThreadId, childThreadId },
+  );
+
+  assert.equal(resolved.association, "run_delegated_task_id");
+  assert.deepEqual(
+    resolved.runs.map((entry) => entry.id),
+    [first.id, second.id],
+  );
+  assert.equal(resolved.run?.id, second.id);
+});
+
+it("accepts only the original task's unique spawn transfer as a legacy anchor", () => {
+  const { projection, run } = taskFixture();
+  const taskId = NodeId.make("node:task-spawn");
+  const spawn = {
+    id: "transfer:spawn",
+    type: "subagent_spawn",
+    sourceThreadId: parentThreadId,
+    targetThreadId: childThreadId,
+    sourcePoint: { threadId: parentThreadId },
+    targetRunId: run.id,
+  };
+  const child = {
+    ...projection,
+    thread: {
+      ...projection.thread,
+      id: childThreadId,
+      forkedFrom: { type: "node" as const, nodeId: taskId },
+    },
+    runs: [run],
+    contextTransfers: [spawn],
+  } as never;
+
+  const resolved = resolveDelegatedTaskRunChain(child, {
+    id: taskId,
+    threadId: parentThreadId,
+    childThreadId,
+  });
+  const followUp = resolveDelegatedTaskRunChain(child, {
+    id: NodeId.make("node:task-follow-up"),
+    threadId: parentThreadId,
+    childThreadId,
+  });
+
+  assert.equal(resolved.association, "spawn_transfer");
+  assert.equal(resolved.run?.id, run.id);
+  assert.equal(followUp.association, "unavailable");
+  assert.isUndefined(followUp.run);
+});
+
+it("returns one task's exact observed result without the agent-facing model note", () => {
+  const { projection, run } = taskFixture();
+  const taskId = NodeId.make("node:task-result-a");
+  const otherTaskId = NodeId.make("node:task-result-b");
+  const runA = { ...run, id: RunId.make("run:result-a"), delegatedTaskId: taskId };
+  const runB = {
+    ...run,
+    id: RunId.make("run:result-b"),
+    ordinal: 2,
+    delegatedTaskId: otherTaskId,
+  };
+  const artifact = (runId: RunId, id: string, text: string, ordinal: number) => {
+    const value = makeSubagentConversationArtifacts({
+      messageId: MessageId.make(`message:${id}`),
+      turnItemId: TurnItemId.make(`item:${id}`),
+      threadId: childThreadId,
+      rootNodeId: NodeId.make("root"),
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      role: "assistant",
+      text,
+      ordinal,
+      now: childCreatedAt,
+    });
+    return {
+      message: { ...value.message, runId },
+      turnItem: { ...value.turnItem, runId },
+    };
+  };
+  const progress = artifact(runA.id, "progress", "Starting the audit.", 1);
+  const report = artifact(runA.id, "report", "Audit complete.", 2);
+  const other = artifact(runB.id, "other", "Other task result.", 3);
+  const child = {
+    ...projection,
+    messages: [progress.message, report.message, other.message],
+    turnItems: [progress.turnItem, report.turnItem, other.turnItem],
+    providerTurns: [
+      {
+        runAttemptId: runA.activeAttemptId,
+        ordinal: 1,
+        model: "reported-model",
+      },
+    ],
+  };
+
+  const raw = subagentOriginalResultForRun(child as never, runA);
+  const anchored = subagentOriginalResultForRun(child as never, runA, {
+    turnItemId: progress.turnItem.id,
+  });
+
+  assert.equal(raw?.text, "Audit complete.");
+  assert.equal(anchored?.text, "Starting the audit.");
+  assert.equal(anchored?.turnItemId, progress.turnItem.id);
+  assert.notInclude(raw?.text ?? "", "Requested model");
 });
 
 it.effect("ends an orphaned native subagent's node when only its record already ended", () =>

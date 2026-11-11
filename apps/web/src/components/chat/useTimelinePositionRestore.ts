@@ -58,6 +58,7 @@ export function startTimelinePositionRestore({
   listOpenedOn,
   rememberedPosition: position,
   citationPending,
+  jumpPending,
   releaseForFind,
   onPositioned,
 }: {
@@ -68,6 +69,8 @@ export function startTimelinePositionRestore({
   readonly listOpenedOn: string | null;
   readonly rememberedPosition: RememberedTimelinePosition | undefined;
   readonly citationPending: boolean;
+  /** A cross-thread message jump owns the opening position until it settles. */
+  readonly jumpPending: boolean;
   /**
    * Find was open when the list started showing the thread. Opening find is
    * navigation, so follow lets go; the thread still opens where it was left,
@@ -76,8 +79,8 @@ export function startTimelinePositionRestore({
   readonly releaseForFind: boolean;
   readonly onPositioned: (identity: string) => void;
 }): () => void {
-  if (citationPending) {
-    // The citation scroll owns positioning once the list has mounted.
+  if (citationPending || jumpPending) {
+    // The citation or message jump owns positioning once the list has mounted.
     onPositioned(listIdentityKey);
     return () => {};
   }

@@ -666,6 +666,30 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
         },
       });
     }
+    yield* store.apply({
+      id: EventId.make("event:idle-compaction:transfer-other-result"),
+      type: "context-transfer.created",
+      threadId,
+      occurredAt: now,
+      payload: {
+        id: ContextTransferId.make("transfer:idle-compaction:other-result"),
+        type: "subagent_result",
+        sourceThreadId: ThreadId.make("thread:idle-compaction:other-child"),
+        targetThreadId: threadId,
+        sourcePoint: { threadId: ThreadId.make("thread:idle-compaction:other-child") },
+        basePoint: null,
+        sourceProviderInstanceId: providerInstanceId,
+        targetProviderInstanceId: providerInstanceId,
+        targetRunId: null,
+        status: "pending",
+        resolution: null,
+        createdBy: "system",
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        consumedAt: null,
+      },
+    });
 
     const records = yield* store.getThreadRecords(
       threadId,
@@ -677,6 +701,9 @@ it.effect("idle compaction filters keep the latest run, live work and the newest
         latestProviderTurnUsageOnly: true,
         runtimeRequestStatuses: ["pending"],
         contextTransferStatuses: ["pending"],
+        contextTransferTypes: ["merge_back"],
+        contextTransferSourceThreadIds: [ThreadId.make("thread:idle-compaction:side")],
+        contextTransferTargetThreadIds: [threadId],
       },
     );
     // The failed latest run stays, so a completed earlier run is not mistaken for the latest,

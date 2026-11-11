@@ -6,6 +6,7 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
+import type { SubagentHandoffNavigationTarget } from "@t3tools/client-runtime/state/subagent-handoff";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   EnvironmentId,
@@ -13,6 +14,7 @@ import type {
   OrchestrationV2TurnItem,
   ServerConfig,
 } from "@t3tools/contracts";
+import { useState } from "react";
 import { Pressable, View, type ColorValue } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -26,6 +28,7 @@ import { subagentCardElapsed } from "./subagent-card-presentation";
 import { useEnvironments } from "../../state/environments";
 import { useServerConfigs } from "../../state/entities";
 import { SubagentRow } from "./SubagentRow";
+import { SubagentHandoffDetails } from "./SubagentHandoffDetails";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
 import { WorkLogBlock } from "./work-log-layout";
@@ -106,6 +109,7 @@ export function ThreadSubagentGroup(props: {
   readonly iconSubtleColor: ColorValue;
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
+  const [openHandoffs, setOpenHandoffs] = useState<Readonly<Record<string, boolean>>>({});
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
@@ -139,6 +143,30 @@ export function ThreadSubagentGroup(props: {
   // A task in a linked environment runs a provider instance of that environment.
   const configOf = (item: SubagentItem) =>
     item.remoteChild === undefined ? config : serverConfigs.get(item.remoteChild.environmentId);
+  const canOpenThreadTarget = (target: SubagentHandoffNavigationTarget) =>
+    target.environmentId === props.environmentId || presentationById.has(target.environmentId);
+  const openThreadTarget = (target: SubagentHandoffNavigationTarget) => {
+    if (!canOpenThreadTarget(target)) return false;
+    if (
+      openInspector(
+        { environmentId: props.environmentId, threadId: members[0]!.threadId },
+        {
+          type: "thread",
+          environmentId: target.environmentId,
+          threadId: target.threadId,
+        },
+      )
+    ) {
+      return true;
+    }
+    navigation.dispatch(
+      StackActions.push("Thread", {
+        environmentId: String(target.environmentId),
+        threadId: String(target.threadId),
+      }),
+    );
+    return true;
+  };
   return (
     <WorkLogBlock>
       {grouped ? (
@@ -193,48 +221,75 @@ export function ThreadSubagentGroup(props: {
             const target = subagentThreadTarget(agent, props.environmentId, (id) =>
               presentationById.has(id),
             );
+            const handoffOpen = openHandoffs[agent.item.id] === true;
             return (
-              <Pressable
-                key={agent.item.id}
-                accessible
-                accessibilityRole={target === null ? undefined : "link"}
-                accessibilityHint={
-                  target !== null
-                    ? "Opens this agent's thread"
-                    : agent.remoteChild !== undefined
-                      ? `Runs on ${agent.remoteChild.label}`
-                      : "Provider-managed agent"
-                }
-                disabled={target === null}
-                onPress={() => {
-                  if (target === null) return;
-                  if (
-                    openInspector(
-                      { environmentId: props.environmentId, threadId: members[0]!.threadId },
-                      {
-                        type: "thread",
-                        environmentId: target.environmentId,
-                        threadId: target.threadId,
-                      },
-                    )
-                  )
-                    return;
-                  navigation.dispatch(
-                    StackActions.push("Thread", {
-                      environmentId: String(target.environmentId),
-                      threadId: String(target.threadId),
-                    }),
-                  );
-                }}
-                className="rounded-lg px-3 py-3 active:bg-subtle"
-              >
-                <SubagentRow
-                  environmentId={props.environmentId}
-                  subagent={agent}
-                  canOpenRemote={target !== null}
-                  elapsed={<SubagentElapsed agents={[agent]} />}
-                />
-              </Pressable>
+              <View key={agent.item.id} className="rounded-lg">
+                <Pressable
+                  accessible
+                  accessibilityRole={target === null ? undefined : "link"}
+                  accessibilityHint={
+                    target !== null
+                      ? "Opens this agent's thread"
+                      : agent.remoteChild !== undefined
+                        ? `Runs on ${agent.remoteChild.label}`
+                        : "Provider-managed agent"
+                  }
+                  disabled={target === null}
+                  onPress={() => {
+                    if (target === null) return;
+                    openThreadTarget({
+                      environmentId: target.environmentId,
+                      threadId: target.threadId,
+                      runId: null,
+                      messageId: null,
+                    });
+                  }}
+                  className="rounded-lg px-3 py-3 active:bg-subtle"
+                >
+                  <SubagentRow
+                    environmentId={props.environmentId}
+                    subagent={agent}
+                    canOpenRemote={target !== null}
+                    elapsed={<SubagentElapsed agents={[agent]} />}
+                  />
+                </Pressable>
+                {agent.origin === "app_owned" ? (
+                  <View className="px-3 pb-2">
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: handoffOpen }}
+                      accessibilityLabel={
+                        handoffOpen ? "Hide handoff records" : "Show handoff records"
+                      }
+                      onPress={() =>
+                        setOpenHandoffs((current) => ({
+                          ...current,
+                          [agent.item.id]: !handoffOpen,
+                        }))
+                      }
+                      className="min-h-8 flex-row items-center gap-1 self-start rounded px-1 active:bg-subtle"
+                    >
+                      <SymbolView
+                        name={handoffOpen ? "chevron.up" : "chevron.down"}
+                        size={10}
+                        tintColor={props.iconSubtleColor}
+                      />
+                      <Text className="text-2xs text-foreground-muted">
+                        {handoffOpen ? "Hide handoff records" : "Show handoff records"}
+                      </Text>
+                    </Pressable>
+                    {handoffOpen ? (
+                      <SubagentHandoffDetails
+                        parentEnvironmentId={props.environmentId}
+                        parentThreadId={agent.item.threadId}
+                        subagentId={agent.item.subagentId}
+                        canOpenTarget={canOpenThreadTarget}
+                        onOpenTarget={openThreadTarget}
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
+              </View>
             );
           })}
         </View>

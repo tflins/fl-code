@@ -1,8 +1,18 @@
 import { createMemoryHistory } from "@tanstack/react-router";
-import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { ThreadId } from "@t3tools/contracts";
+import {
+  scopeProjectRef,
+  scopeThreadRef,
+  scopedThreadKey,
+} from "@t3tools/client-runtime/environment";
+import {
+  finishThreadMessageJump,
+  pendingThreadMessageJump,
+  requestThreadMessageJump,
+} from "@t3tools/client-runtime/state/thread-message-jump";
+import { MessageId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type * as Context from "effect/Context";
+import { Activity, StrictMode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 
@@ -11,13 +21,16 @@ import { AppRoot } from "~/AppRoot";
 // takes 6-11s; importing it here keeps that out of the test's timeout.
 import "~/components/ChatView";
 import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
+import { ThreadTimeline } from "./chat/ThreadTimeline";
 import { __setClientSettingsForTests } from "~/hooks/useSettings";
 import { getRouter } from "~/router";
 import {
   ENVIRONMENT_ID,
   PROJECT_ID,
   installFakeEnvironment,
+  threadWithHistory,
   type FakeDriver,
+  type FakeThread,
 } from "../../test/fakeEnvironment";
 import { render } from "../../test/render";
 
@@ -35,6 +48,80 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   ...(await original()),
   trackRpcRequestSent: () => {},
 }));
+
+vi.mock(import("./chat/ThreadTimeline"), { spy: true });
+
+const historyThreadKey = (threadId: ThreadId) =>
+  scopedThreadKey(scopeThreadRef(ENVIRONMENT_ID, threadId));
+
+interface StrictHistoryScenario {
+  readonly router: ReturnType<typeof getRouter>;
+  readonly replay: (beforeReplay?: () => void) => Promise<void>;
+}
+
+async function withStrictHistoryScenario(
+  threads: ReadonlyArray<FakeThread>,
+  initialPath: string,
+  run: (scenario: StrictHistoryScenario) => Promise<void>,
+): Promise<void> {
+  using _environment = installFakeEnvironment(threads);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({
+      initialEntries: [initialPath],
+    }),
+  );
+  await router.load();
+  const renderApp = (mode: "visible" | "hidden" = "visible") => (
+    <StrictMode>
+      <Activity mode={mode}>
+        <AppRoot router={router} />
+      </Activity>
+    </StrictMode>
+  );
+  await using app = await render(renderApp(), {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await run({
+    router,
+    replay: async (beforeReplay) => {
+      beforeReplay?.();
+      await app.rerender(renderApp("hidden"));
+      await app.rerender(renderApp());
+    },
+  });
+}
+
+async function expectTimelineJump(threadKey: string, messageId: MessageId) {
+  await vi.waitFor(() => {
+    expect(
+      vi
+        .mocked(ThreadTimeline)
+        .mock.calls.some(
+          ([props]) => props.routeThreadKey === threadKey && props.jumpToMessageId === messageId,
+        ),
+    ).toBe(true);
+  });
+}
+
+async function expectTimelineRowInViewport(messageId: MessageId) {
+  await vi.waitFor(() => {
+    const row = document.querySelector<HTMLElement>(`[data-timeline-row-id="${messageId}"]`);
+    expect(row).not.toBeNull();
+    const viewport = document.querySelector<HTMLElement>(
+      '[data-assistant-citation-viewport="true"]',
+    );
+    expect(viewport).not.toBeNull();
+    const rowBounds = row!.getBoundingClientRect();
+    const viewportBounds = viewport!.getBoundingClientRect();
+    expect(rowBounds.top).toBeGreaterThanOrEqual(viewportBounds.top - 1);
+    expect(rowBounds.top).toBeLessThan(viewportBounds.bottom);
+  });
+}
 
 it("a new draft does not load its reserved thread before the server lists it", async () => {
   using _environment = installFakeEnvironment([]);
@@ -64,4 +151,109 @@ it("a new draft does not load its reserved thread before the server lists it", a
     .filter((url) => url.includes(`/api/orchestration/threads/${threadId}/`));
   // A 404 here marks the thread deleted, and the view never loads it once the send creates it.
   expect(threadRequests).toEqual([]);
+});
+
+it("keeps a first historical jump through StrictMode and cancels it on leave", async () => {
+  await page.viewport(1440, 1000);
+  const assistantThread = {
+    ...threadWithHistory("strict-history-assistant", 40),
+    hasMoreHistory: true,
+  };
+  const assistantThreadKey = historyThreadKey(assistantThread.id);
+  using _jumpCleanup = {
+    [Symbol.dispose]: () => {
+      finishThreadMessageJump(assistantThreadKey);
+    },
+  };
+
+  const pendingTarget = MessageId.make("strict-history-assistant-assistant-6");
+  const cancelledTarget = MessageId.make("strict-history-assistant-cancelled");
+
+  await withStrictHistoryScenario(
+    [assistantThread],
+    `/${ENVIRONMENT_ID}/${assistantThread.id}`,
+    async ({ router, replay }) => {
+      await expect.element(page.getByText("Answer 39 for strict-history-assistant.")).toBeVisible();
+
+      await replay(() => requestThreadMessageJump(assistantThreadKey, pendingTarget));
+      await expectTimelineJump(assistantThreadKey, pendingTarget);
+      await vi.waitFor(() => expect(pendingThreadMessageJump(assistantThreadKey)).toBeNull());
+      await expectTimelineRowInViewport(pendingTarget);
+
+      requestThreadMessageJump(assistantThreadKey, cancelledTarget);
+      expect(pendingThreadMessageJump(assistantThreadKey)).toBe(cancelledTarget);
+      await router.navigate({ href: "/new" });
+      await vi.waitFor(() => expect(router.state.location.pathname).toBe("/new"));
+      await vi.waitFor(() => expect(pendingThreadMessageJump(assistantThreadKey)).toBeNull());
+
+      const callsBeforeReturn = vi.mocked(ThreadTimeline).mock.calls.length;
+      await router.navigate({ href: `/${ENVIRONMENT_ID}/${assistantThread.id}` });
+      await vi.waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${assistantThread.id}`),
+      );
+      const returnedJumpTargets = vi
+        .mocked(ThreadTimeline)
+        .mock.calls.slice(callsBeforeReturn)
+        .filter(([props]) => props.routeThreadKey === assistantThreadKey)
+        .map(([props]) => props.jumpToMessageId);
+      expect(returnedJumpTargets).not.toContain(cancelledTarget);
+    },
+  );
+});
+
+it("opens historical user and missing targets under StrictMode", async () => {
+  await page.viewport(1440, 1000);
+  const userThread = threadWithHistory("strict-history-user-target", 40);
+  const missingThread = threadWithHistory("strict-history-missing", 40);
+  const userThreadKey = historyThreadKey(userThread.id);
+  const missingThreadKey = historyThreadKey(missingThread.id);
+  using _jumpCleanup = {
+    [Symbol.dispose]: () => {
+      finishThreadMessageJump(userThreadKey);
+      finishThreadMessageJump(missingThreadKey);
+    },
+  };
+
+  const userTarget = MessageId.make("strict-history-user-target-user-8");
+  const missingLatest = MessageId.make("strict-history-missing-assistant-39");
+
+  await withStrictHistoryScenario(
+    [userThread, missingThread],
+    `/${ENVIRONMENT_ID}/${userThread.id}`,
+    async ({ router }) => {
+      await expect
+        .element(page.getByText("Answer 39 for strict-history-user-target."))
+        .toBeVisible();
+      await router.navigate({ href: "/new" });
+      await vi.waitFor(() => expect(router.state.location.pathname).toBe("/new"));
+
+      requestThreadMessageJump(userThreadKey, userTarget);
+      await router.navigate({ href: `/${ENVIRONMENT_ID}/${userThread.id}` });
+      await vi.waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${userThread.id}`),
+      );
+      await expectTimelineJump(userThreadKey, userTarget);
+      await vi.waitFor(() => expect(pendingThreadMessageJump(userThreadKey)).toBeNull());
+      await expectTimelineRowInViewport(userTarget);
+
+      const callsBeforeMissing = vi.mocked(ThreadTimeline).mock.calls.length;
+      requestThreadMessageJump(missingThreadKey, MessageId.make("message-does-not-exist"));
+      await router.navigate({ href: `/${ENVIRONMENT_ID}/${missingThread.id}` });
+      await vi.waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/${ENVIRONMENT_ID}/${missingThread.id}`),
+      );
+      await expect
+        .element(page.getByText("Answer 39 for strict-history-missing."))
+        .toBeInViewport();
+      await vi.waitFor(() => expect(pendingThreadMessageJump(missingThreadKey)).toBeNull());
+      const missingJumpTargets = vi
+        .mocked(ThreadTimeline)
+        .mock.calls.slice(callsBeforeMissing)
+        .filter(([props]) => props.routeThreadKey === missingThreadKey)
+        .map(([props]) => props.jumpToMessageId)
+        .filter((messageId) => messageId !== null && messageId !== undefined);
+      expect(missingJumpTargets).not.toContain(missingLatest);
+      expect(missingJumpTargets).toEqual([]);
+    },
+  );
 });
