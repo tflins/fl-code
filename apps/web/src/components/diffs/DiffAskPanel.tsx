@@ -47,7 +47,7 @@ export function DiffAskPanel(props: {
           <XIcon />
         </Button>
       </div>
-      <div className="min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1">
         <BackgroundThreadContext value>
           <ComposerHandleContext value={null}>
             <ChatView
