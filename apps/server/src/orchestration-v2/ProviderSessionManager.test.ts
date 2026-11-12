@@ -2279,11 +2279,12 @@ it.effect(
 );
 
 it.effect.each([
-  { relationshipToParent: null, subagent: false },
-  { relationshipToParent: "subagent", subagent: true },
+  { name: "toplevel", relationshipToParent: null, subagent: false, decision: false },
+  { name: "subagent", relationshipToParent: "subagent", subagent: true, decision: false },
+  { name: "decision", relationshipToParent: null, subagent: false, decision: true },
 ] as const)(
-  "ProviderSessionManagerV2 marks MCP credentials of delegated children ($relationshipToParent)",
-  ({ relationshipToParent, subagent }) =>
+  "ProviderSessionManagerV2 marks MCP credentials with thread context ($name)",
+  ({ relationshipToParent, subagent, decision }) =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
       const mcpConfigs = yield* Ref.make<
@@ -2308,6 +2309,18 @@ it.effect.each([
               ...created,
               payload: {
                 ...created.payload,
+                ...(decision
+                  ? {
+                      decision: {
+                        sourceThreadId: parentThreadId,
+                        question: "Keep the cache?",
+                        status: "discussing" as const,
+                        revision: 1,
+                        createdAt: now,
+                        updatedAt: now,
+                      },
+                    }
+                  : {}),
                 lineage:
                   relationshipToParent === null
                     ? created.payload.lineage
@@ -2324,6 +2337,7 @@ it.effect.each([
         );
         assert.isDefined(token);
         assert.equal((yield* registry.resolve(token!))?.thread.subagent, subagent);
+        assert.equal((yield* registry.resolve(token!))?.thread.decision, decision);
         yield* manager.close(providerSessionId);
       });
 

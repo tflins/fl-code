@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
@@ -8,6 +9,7 @@ import {
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
+  OrchestrationV2Command,
   OrchestrationV2RpcSchemas,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
@@ -484,6 +486,84 @@ describe("thread open stats", () => {
     const opens = { openedAt: 1, score: 1, picks: [{ query: "upl", at: 1 }] };
     expect(decode({ ...shell, opens }).opens).toEqual(opens);
     expect(decode({ ...shell, opens: { openedAt: "2026-10-01", score: 1 } }).opens).toBeNull();
+  });
+});
+
+describe("decision threads", () => {
+  const shell = {
+    id: "thread-decision",
+    projectId: "project-test",
+    title: "Decision",
+    providerInstanceId: "codex",
+    modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+    runtimeMode: "approval-required",
+    interactionMode: "plan",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { rootThreadId: "thread-decision", parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdBy: "agent",
+    creationSource: "mcp",
+    latestRunId: null,
+    activeRunId: null,
+    status: "idle",
+    pendingRuntimeRequest: null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    deletedAt: null,
+  };
+
+  it("keeps ordinary shells readable and round-trips optional decision metadata", () => {
+    const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadShellJson);
+    expect(decode(shell).decision).toBeUndefined();
+
+    const decoded = decode({
+      ...shell,
+      decision: {
+        sourceThreadId: "thread-source",
+        question: "Keep the cache?",
+        context: "The reader and retention job depend on it.",
+        status: "completed",
+        revision: 2,
+        createdAt: "2026-10-01T00:00:00.000Z",
+        updatedAt: "2026-10-01T01:00:00.000Z",
+        finalAnswer: "Keep it for 30 days.",
+        confirmationId: "command-1",
+        sourceMessageId: "message-1",
+        completedAt: "2026-10-01T01:00:00.000Z",
+        cancelledAt: null,
+      },
+    });
+    expect(decoded.decision).toMatchObject({
+      sourceThreadId: "thread-source",
+      status: "completed",
+      revision: 2,
+      finalAnswer: "Keep it for 30 days.",
+    });
+  });
+
+  it("keeps client confirmation out of the generic command union", () => {
+    const decode = Schema.decodeUnknownExit(OrchestrationV2Command);
+    expect(
+      Exit.isFailure(
+        decode({
+          type: "decision.confirm",
+          commandId: "command-1",
+          threadId: "thread-decision",
+          expectedRevision: 1,
+          answer: "Keep it.",
+        }),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -1,6 +1,8 @@
 import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
+  OrchestratorMcpDecisionInput,
+  OrchestratorMcpDecisionResult,
   OrchestrationV2StopWorkflowInput,
   OrchestratorMcpEnvironmentLinkInput,
   OrchestratorMcpEnvironmentLinkResult,
@@ -108,6 +110,20 @@ const TaskStatusTool = Tool.make("task_status", {
   .annotate(Tool.Title, "Get delegated task status")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true);
+
+const DecisionTool = Tool.make("t3_decision", {
+  description:
+    "Open or read a separate decision thread. create: use a stable `clientRequestId` for this issue, `question`, minimal `context`, and optional `options`. Retries reuse the issue identity. It keeps the model and workspace, starts a fresh conversation, and returns at once so independent work continues. read: `threadId`, or omit in that decision thread. Only the user can confirm the final answer; intermediate discussion never returns to the source.",
+  parameters: OrchestratorMcpDecisionInput,
+  success: OrchestratorMcpDecisionResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Open a decision thread")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true)
   .annotate(Tool.Idempotent, true);
 
 const TaskCancelTool = Tool.make("task_cancel", {
@@ -353,6 +369,7 @@ export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,
+  DecisionTool,
   TaskCancelTool,
   WorkflowStopTool,
   BackgroundWaitTool,

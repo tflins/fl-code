@@ -12,9 +12,11 @@ type WorkingThreadInput = Pick<
   | "interactionMode"
   | "latestRun"
   | "runtime"
+  | "decision"
 >;
 
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
+  if (thread.decision?.status === "discussing") return false;
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
   if (thread.pendingSubagentRequest != null) return false;
   if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;

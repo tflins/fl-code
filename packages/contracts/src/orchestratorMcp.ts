@@ -4,6 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
 import {
+  CommandId,
   ContextTransferId,
   EnvironmentId,
   IsoDateTime,
@@ -38,6 +39,7 @@ import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2DecisionStatus,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
@@ -430,6 +432,25 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 });
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
+export const OrchestratorMcpDecision = Schema.Struct({
+  sourceThreadId: ThreadId,
+  requestKey: Schema.optional(Schema.String),
+  question: Schema.String,
+  options: Schema.optional(Schema.Array(Schema.String)),
+  context: Schema.optional(Schema.String),
+  status: OrchestrationV2DecisionStatus,
+  revision: NonNegativeInt,
+  finalAnswer: Schema.NullOr(Schema.String),
+  confirmationId: Schema.NullOr(CommandId),
+  sourceMessageId: Schema.NullOr(MessageId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
+  cancelledAt: Schema.NullOr(IsoDateTime),
+  cancellationNotified: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpDecision = typeof OrchestratorMcpDecision.Type;
+
 export const OrchestratorMcpThreadDetail = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
@@ -451,6 +472,8 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   worktreePath: Schema.NullOr(Schema.String),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+  /** Present only on decision threads. */
+  decision: Schema.optional(OrchestratorMcpDecision),
   runCount: NonNegativeInt,
   itemCount: NonNegativeInt,
   pendingRequestCount: NonNegativeInt,
@@ -506,6 +529,46 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
   hasMore: Schema.Boolean,
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
+
+export const OrchestratorMcpDecisionInput = Schema.Struct({
+  action: Schema.Literals(["create", "read"]),
+  clientRequestId: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)).annotate({
+      description:
+        "create: stable identity for this source issue. Reuse it to return the existing discussion; its initial question and context stay unchanged.",
+    }),
+  ),
+  options: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(512))).check(Schema.isMaxLength(6)),
+  ),
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  /** `read`: the decision thread. Omit to read this thread when it is one. */
+  threadId: Schema.optional(ThreadId),
+  /** `create`: the execution thread with the question. Omit for this thread. */
+  sourceThreadId: Schema.optional(ThreadId),
+  question: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)).annotate({
+      description: "create: the one question to discuss. Reuse the same text when retrying.",
+    }),
+  ),
+  context: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(16_000)).annotate({
+      description: "create: only the facts the decision depends on, never a transcript.",
+    }),
+  ),
+  title: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+});
+export type OrchestratorMcpDecisionInput = typeof OrchestratorMcpDecisionInput.Type;
+
+export const OrchestratorMcpDecisionResult = Schema.Struct({
+  threadId: ThreadId,
+  link: Schema.optional(Schema.String),
+  created: Schema.Boolean,
+  sourceThreadId: ThreadId,
+  sourceAvailable: Schema.Boolean,
+  decision: OrchestratorMcpDecision,
+});
+export type OrchestratorMcpDecisionResult = typeof OrchestratorMcpDecisionResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,

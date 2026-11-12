@@ -1,5 +1,6 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import * as DateTime from "effect/DateTime";
 
 import {
   createInboxReturnTracker,
@@ -35,6 +36,22 @@ function thread(id: string, working: boolean) {
 }
 
 describe("createInboxReturnTracker", () => {
+  it("keeps an open decision in the inbox while its discussion agent works", () => {
+    const now = DateTime.makeUnsafe("2026-06-01T00:00:00.000Z");
+    const discussing = {
+      ...thread("decision", true),
+      decision: {
+        sourceThreadId: ThreadId.make("source"),
+        question: "Choose a retention policy",
+        status: "discussing" as const,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+    expect(isThreadWorking(discussing)).toBe(false);
+    expect(isThreadWorking(thread("source", true))).toBe(true);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);

@@ -502,9 +502,12 @@ export const layerWithOptions = (
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
-                const subagent = yield* projectionStore.getThread(threadId).pipe(
-                  Effect.map((thread) => thread.lineage.relationshipToParent === "subagent"),
-                  Effect.orElseSucceed(() => false),
+                const threadFlags = yield* projectionStore.getThread(threadId).pipe(
+                  Effect.map((thread) => ({
+                    subagent: thread.lineage.relationshipToParent === "subagent",
+                    decision: thread.decision !== undefined,
+                  })),
+                  Effect.orElseSucceed(() => ({ subagent: false, decision: false })),
                 );
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
@@ -528,7 +531,8 @@ export const layerWithOptions = (
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
                     resolved.capabilities.has("device") === deviceToolsAvailable &&
                     // A credential issued while the lineage read failed is replaced once it works.
-                    (resolved.thread.subagent === true) === subagent
+                    (resolved.thread.subagent === true) === threadFlags.subagent &&
+                    (resolved.thread.decision === true) === threadFlags.decision
                   ) {
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
@@ -540,7 +544,8 @@ export const layerWithOptions = (
                   providerInstanceId,
                   browserToolsAvailable,
                   capabilities,
-                  subagent,
+                  subagent: threadFlags.subagent,
+                  decision: threadFlags.decision,
                 });
                 yield* mcpSessions.set(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);

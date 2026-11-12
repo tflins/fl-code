@@ -776,7 +776,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
   const recede = shouldRecedeThreadRow({ status, selected });
   const isRegeneratingTitle = thread.titleRegeneration != null;
-  const rowAccessibilityLabel = `${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
+  const rowAccessibilityLabel = `${thread.decision ? "Decision: " : ""}${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
@@ -1158,6 +1158,19 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const cardContent = (
     <>
       <View className="flex-row items-start gap-2">
+        {thread.decision ? (
+          <View
+            accessibilityLabel="Decision"
+            className="justify-center"
+            style={{ height: titleLineHeight }}
+          >
+            <SymbolView
+              name="bubble.left.and.bubble.right"
+              size={14}
+              tintColorClassName="accent-foreground-muted"
+            />
+          </View>
+        ) : null}
         {props.project ? (
           <View className="justify-center" style={{ height: titleLineHeight }}>
             <ProjectFavicon
@@ -1485,6 +1498,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 size={projectIconSize}
                 projectTitle={props.project.title}
                 workspaceRoot={props.project.workspaceRoot}
+              />
+            </View>
+          ) : null}
+          {thread.decision ? (
+            <View accessibilityLabel="Decision">
+              <SymbolView
+                name="bubble.left.and.bubble.right"
+                size={14}
+                tintColorClassName="accent-foreground-muted"
               />
             </View>
           ) : null}

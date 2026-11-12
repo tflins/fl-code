@@ -29,6 +29,8 @@ export interface McpThreadCaller {
   readonly providerInstanceId: ProviderInstanceId;
   /** A delegated child task; its parent owns the work it hands back. */
   readonly subagent?: boolean;
+  /** A decision thread: it discusses with the user and must not write or start work. */
+  readonly decision?: boolean;
 }
 
 export interface McpClientCaller {

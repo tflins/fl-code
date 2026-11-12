@@ -46,6 +46,7 @@ import {
   ClockIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
+  MessagesSquareIcon,
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
@@ -1017,7 +1018,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ) : null;
 
   const accessibility = resolveSidebarRowAccessibility({
-    title: thread.title,
+    title: thread.decision ? `Decision: ${thread.title}` : thread.title,
     statusLabel: topStatus?.label ?? null,
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
@@ -1059,6 +1060,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       )}
       dir={textDirection(thread.title)}
     >
+      {thread.decision ? (
+        <MessagesSquareIcon
+          aria-label="Decision"
+          className="mr-1 inline size-3.5 align-text-bottom"
+        />
+      ) : null}
       {thread.title}
     </span>
   );
@@ -1645,7 +1652,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   const thread =
     useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
   const accessibility = resolveSidebarRowAccessibility({
-    title: thread.title,
+    title: thread.decision ? `Decision: ${thread.title}` : thread.title,
     statusLabel: null,
     projectDisplayName: props.projectDisplayName,
     isActive: props.isRouteActive,
@@ -1769,6 +1776,12 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
                   thread.titleRegeneration != null && "opacity-55",
                 )}
               >
+                {thread.decision ? (
+                  <MessagesSquareIcon
+                    aria-label="Decision"
+                    className="mr-1 inline size-3.5 align-text-bottom"
+                  />
+                ) : null}
                 {thread.title}
               </span>
               <span id={`${props.resultId}-pr`} className="contents">

@@ -8,6 +8,7 @@ import {
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
   TurnItemId,
   type OrchestrationV2Run,
+  type OrchestrationV2Decision,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
@@ -22,6 +23,9 @@ import {
   type OrchestratorMcpCreatedThread,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
+  type OrchestratorMcpDecisionInput,
+  type OrchestratorMcpDecisionResult,
+  type OrchestratorMcpDecision,
   type OrchestratorMcpDeleteScheduledTaskInput,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
@@ -67,6 +71,8 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
+// @effect-diagnostics nodeBuiltinImport:off -- Stable decision ids need a synchronous digest.
+import * as NodeCrypto from "node:crypto";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -181,6 +187,14 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpCreateThreadsInput,
   ) => Effect.Effect<OrchestratorMcpCreateThreadsResult, OrchestratorMcpFailure>;
+  readonly createDecision: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpDecisionInput,
+  ) => Effect.Effect<OrchestratorMcpDecisionResult, OrchestratorMcpFailure>;
+  readonly readDecision: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpDecisionInput,
+  ) => Effect.Effect<OrchestratorMcpDecisionResult, OrchestratorMcpFailure>;
   readonly scheduleTask: (
     scope: McpInvocationScope,
     input: OrchestratorMcpScheduleTaskInput,
@@ -886,6 +900,9 @@ function threadDetail(
     worktreePath: projection.thread.worktreePath,
     parentThreadId: projection.thread.lineage.parentThreadId,
     relationshipToParent: projection.thread.lineage.relationshipToParent,
+    ...(projection.thread.decision === undefined
+      ? {}
+      : { decision: decisionDetail(projection.thread.decision) }),
     runCount: projection.runs.length,
     itemCount,
     pendingRequestCount: projection.runtimeRequests.filter(
@@ -896,6 +913,34 @@ function threadDetail(
     ...threadSnooze(shell, nowMs),
     createdAt: DateTime.formatIso(projection.thread.createdAt),
     updatedAt: DateTime.formatIso(projection.thread.updatedAt),
+  };
+}
+
+function decisionDetail(decision: OrchestrationV2Decision): OrchestratorMcpDecision {
+  return {
+    ...(decision.cancellationNotified === undefined
+      ? {}
+      : { cancellationNotified: decision.cancellationNotified }),
+    ...(decision.requestKey === undefined ? {} : { requestKey: decision.requestKey }),
+    ...(decision.options === undefined ? {} : { options: decision.options }),
+    sourceThreadId: decision.sourceThreadId,
+    question: decision.question,
+    ...(decision.context === undefined ? {} : { context: decision.context }),
+    status: decision.status,
+    revision: decision.revision,
+    finalAnswer: decision.finalAnswer ?? null,
+    confirmationId: decision.confirmationId ?? null,
+    sourceMessageId: decision.sourceMessageId ?? null,
+    createdAt: DateTime.formatIso(decision.createdAt),
+    updatedAt: DateTime.formatIso(decision.updatedAt),
+    completedAt:
+      decision.completedAt === undefined || decision.completedAt === null
+        ? null
+        : DateTime.formatIso(decision.completedAt),
+    cancelledAt:
+      decision.cancelledAt === undefined || decision.cancelledAt === null
+        ? null
+        : DateTime.formatIso(decision.cancelledAt),
   };
 }
 
@@ -1276,6 +1321,73 @@ const make = Effect.gen(function* () {
     const target = yield* records.pipe(Effect.mapError(threadManagementFailure));
     return { parent, target, shell } as const;
   });
+
+  const decisionThreadIdFor = (input: {
+    readonly sourceThreadId: ThreadId;
+    readonly requestKey: string | undefined;
+    readonly question: string;
+    readonly context: string | undefined;
+  }) => {
+    const digest = NodeCrypto.createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.sourceThreadId,
+          input.requestKey ?? [input.question, input.context ?? null],
+        ]),
+      )
+      .digest("hex");
+    return ThreadId.make(`thread:decision:${digest}`);
+  };
+
+  const decisionSourceAvailable = (sourceThreadId: ThreadId) =>
+    threadManagement.getThreadShell(sourceThreadId).pipe(
+      Effect.mapError(threadManagementFailure),
+      Effect.map((shell) => shell !== null && shell.deletedAt === null),
+    );
+
+  const decisionDiscussionPrompt = (input: {
+    readonly sourceThreadId: ThreadId;
+    readonly options: ReadonlyArray<string> | undefined;
+    readonly question: string;
+    readonly context: string | undefined;
+  }) =>
+    [
+      "You are in a decision thread. Discuss this question with the user; no execution work belongs here.",
+      "Do not edit or write files, run commands that change the workspace, start agents or threads, or send messages to the source thread.",
+      "The source thread continues independently. Only the user can confirm the final answer, and only that confirmed answer returns to the source.",
+      "",
+      `Source thread: ${input.sourceThreadId}`,
+      `Question: ${input.question}`,
+      ...(input.options?.length
+        ? ["Options:", ...input.options.map((option) => `- ${option}`)]
+        : []),
+      ...(input.context === undefined || input.context.length === 0
+        ? []
+        : ["", "Context:", input.context]),
+    ].join("\n");
+
+  const decisionResult = (input: {
+    readonly scope: McpInvocationScope;
+    readonly shell: OrchestrationV2ThreadShell;
+    readonly created: boolean;
+    readonly sourceAvailable: boolean;
+  }): Effect.Effect<OrchestratorMcpDecisionResult, OrchestratorMcpFailure> => {
+    const decision = input.shell.decision;
+    if (decision === undefined) {
+      return Effect.fail(failure("invalid_request", "That thread is not a decision thread."));
+    }
+    return Effect.succeed({
+      threadId: input.shell.id,
+      link: formatThreadLink(
+        { environmentId: input.scope.environmentId, threadId: input.shell.id },
+        input.shell.title,
+      ),
+      created: input.created,
+      sourceThreadId: decision.sourceThreadId,
+      sourceAvailable: input.sourceAvailable,
+      decision: decisionDetail(decision),
+    });
+  };
 
   const loadProviders = providerRegistry.getProviders;
 
@@ -3016,6 +3128,191 @@ const make = Effect.gen(function* () {
         return { threads: created };
       },
     ),
+    createDecision: Effect.fn("OrchestratorMcpService.createDecision")(
+      function* (callerScope, input) {
+        const { scope, parent } = yield* loadThreadCaller(callerScope, "create decision");
+        if (parent.thread.decision !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "A decision thread cannot open another decision thread.",
+          );
+        }
+        if (parent.thread.archivedAt !== null || parent.thread.deletedAt !== null) {
+          return yield* failure("invalid_request", "This thread cannot open a decision thread.");
+        }
+        const sourceThreadId = input.sourceThreadId ?? parent.thread.id;
+        if (sourceThreadId !== parent.thread.id) {
+          return yield* failure(
+            "invalid_request",
+            "A decision belongs to the thread that opened it, so sourceThreadId must be this thread or omitted.",
+          );
+        }
+        const question = input.question?.trim();
+        if (question === undefined || question.length === 0) {
+          return yield* failure("invalid_request", "This action needs `question`.");
+        }
+        const parentRun = ThreadManagementService.latestActiveRun(parent);
+        if (
+          parentRun === undefined ||
+          parentRun.rootNodeId === null ||
+          parentRun.providerInstanceId !== scope.thread.providerInstanceId
+        ) {
+          return yield* failure(
+            "parent_not_active",
+            "Creating a decision requires an active run owned by this MCP provider session.",
+          );
+        }
+
+        const context = input.context?.trim() || undefined;
+        const decisionThreadId = decisionThreadIdFor({
+          sourceThreadId,
+          requestKey: input.clientRequestId,
+          question,
+          context,
+        });
+        const existing = yield* threadManagement
+          .getThreadShell(decisionThreadId)
+          .pipe(Effect.mapError(threadManagementFailure));
+        if (existing !== null && existing.deletedAt !== null) {
+          return yield* failure(
+            "invalid_request",
+            "The decision thread for this issue was deleted. Opening a new issue requires a different question or context.",
+          );
+        }
+        if (existing !== null) {
+          const decision = existing.decision;
+          if (
+            decision === undefined ||
+            decision.sourceThreadId !== sourceThreadId ||
+            (input.clientRequestId !== undefined
+              ? decision.requestKey !== input.clientRequestId
+              : decision.question !== question || (decision.context ?? "") !== (context ?? ""))
+          ) {
+            return yield* failure(
+              "orchestration_error",
+              "A different thread already owns this decision id.",
+            );
+          }
+        }
+
+        const created = existing === null;
+        const shell =
+          existing ??
+          (yield* threadManagement
+            .dispatch({
+              type: "thread.create",
+              createdBy: "agent",
+              creationSource: "mcp",
+              commandId: yield* threadManagement
+                .nextCommandAttemptId(CommandId.make(`create:${decisionThreadId}`))
+                .pipe(Effect.mapError(threadManagementFailure)),
+              threadId: decisionThreadId,
+              projectId: parent.thread.projectId,
+              title: threadTitle({
+                parentTitle: parent.thread.title,
+                prompt: question,
+                title: input.title,
+                index: 0,
+              }),
+              modelSelection: parent.thread.modelSelection,
+              runtimeMode: "approval-required",
+              interactionMode: "plan",
+              branch: parent.thread.branch,
+              worktreePath: parent.thread.worktreePath,
+              decision: {
+                sourceThreadId,
+                question,
+                ...(input.clientRequestId === undefined
+                  ? {}
+                  : { requestKey: input.clientRequestId }),
+                ...(input.options === undefined ? {} : { options: input.options }),
+                ...(context === undefined ? {} : { context }),
+              },
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                failure(
+                  "orchestration_error",
+                  `Unable to create decision thread: ${errorMessage(error)}`,
+                ),
+              ),
+              Effect.andThen(() =>
+                threadManagement
+                  .getThreadShell(decisionThreadId)
+                  .pipe(Effect.mapError(threadManagementFailure)),
+              ),
+            ));
+        if (shell === null || shell.decision === undefined) {
+          return yield* failure(
+            "orchestration_error",
+            "The decision thread was accepted but could not be read back.",
+          );
+        }
+
+        const persistedDecision = shell.decision;
+        const initialMessageId = MessageId.make(`${decisionThreadId}:initial`);
+        const initialMessage = yield* threadManagement
+          .getThreadRecords(decisionThreadId, ["messages"], { messageIds: [initialMessageId] })
+          .pipe(Effect.mapError(threadManagementFailure));
+        if (initialMessage.messages.length === 0) {
+          yield* threadManagement
+            .dispatch({
+              type: "message.dispatch",
+              createdBy: "agent",
+              creationSource: "mcp",
+              commandId: yield* threadManagement
+                .nextCommandAttemptId(CommandId.make(`start:${decisionThreadId}`))
+                .pipe(Effect.mapError(threadManagementFailure)),
+              threadId: decisionThreadId,
+              senderThreadId: sourceThreadId,
+              messageId: initialMessageId,
+              text: decisionDiscussionPrompt({
+                sourceThreadId,
+                question: persistedDecision.question,
+                context: persistedDecision.context,
+                options: persistedDecision.options,
+              }),
+              attachments: [],
+              modelSelection: shell.modelSelection,
+              dispatchMode: { type: "start_immediately" },
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                failure(
+                  "orchestration_error",
+                  `Unable to start the decision discussion: ${errorMessage(error)}`,
+                ),
+              ),
+            );
+        }
+
+        return yield* decisionResult({
+          scope,
+          shell,
+          created,
+          sourceAvailable: yield* decisionSourceAvailable(sourceThreadId),
+        });
+      },
+    ),
+    readDecision: Effect.fn("OrchestratorMcpService.readDecision")(function* (callerScope, input) {
+      const threadId = input.threadId ?? callerScope.thread?.threadId;
+      if (threadId === undefined) {
+        return yield* failure(
+          "thread_credential_required",
+          "Pass `threadId`, or call this from the decision thread.",
+        );
+      }
+      const { shell } = yield* loadReadableThread(callerScope, threadId);
+      if (shell.decision === undefined) {
+        return yield* failure("invalid_request", `Thread ${threadId} is not a decision thread.`);
+      }
+      return yield* decisionResult({
+        scope: callerScope,
+        shell,
+        created: false,
+        sourceAvailable: yield* decisionSourceAvailable(shell.decision.sourceThreadId),
+      });
+    }),
     listThreads: Effect.fn("OrchestratorMcpService.listThreads")(function* (scope, input) {
       const { parent } = yield* loadCaller(scope, []);
       const projectId = input.allProjects

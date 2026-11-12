@@ -139,6 +139,87 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
+export const OrchestrationV2DecisionStatus = Schema.Literals([
+  "discussing",
+  "completed",
+  "cancelled",
+]);
+export type OrchestrationV2DecisionStatus = typeof OrchestrationV2DecisionStatus.Type;
+
+/** The minimum a decision thread needs from its source: the question, never the transcript. */
+export const OrchestrationV2DecisionIssue = Schema.Struct({
+  sourceThreadId: ThreadId,
+  requestKey: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
+  question: TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)),
+  options: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(512))).check(Schema.isMaxLength(6)),
+  ),
+  context: Schema.optional(Schema.String.check(Schema.isMaxLength(16_000))),
+});
+export type OrchestrationV2DecisionIssue = typeof OrchestrationV2DecisionIssue.Type;
+
+export const OrchestrationV2Decision = Schema.Struct({
+  ...OrchestrationV2DecisionIssue.fields,
+  status: OrchestrationV2DecisionStatus,
+  /** Bumped by every reopen and confirmation, so a stale submit cannot overwrite a newer decision. */
+  revision: NonNegativeInt,
+  createdAt: Schema.DateTimeUtc,
+  updatedAt: Schema.DateTimeUtc,
+  /** The user-confirmed text returned to the source. Kept when a handled decision is reopened. */
+  finalAnswer: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(120_000)))),
+  confirmationId: Schema.optional(Schema.NullOr(CommandId)),
+  sourceMessageId: Schema.optional(Schema.NullOr(MessageId)),
+  completedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  cancelledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  cancellationNotified: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationV2Decision = typeof OrchestrationV2Decision.Type;
+
+export const OrchestrationV2DecisionConfirmInput = Schema.Struct({
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedRevision: NonNegativeInt,
+  answer: TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)),
+});
+export type OrchestrationV2DecisionConfirmInput = typeof OrchestrationV2DecisionConfirmInput.Type;
+
+export const OrchestrationV2DecisionCancelInput = Schema.Struct({
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedRevision: NonNegativeInt,
+});
+export type OrchestrationV2DecisionCancelInput = typeof OrchestrationV2DecisionCancelInput.Type;
+
+export const OrchestrationV2DecisionReopenInput = Schema.Struct({
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedRevision: NonNegativeInt,
+});
+export type OrchestrationV2DecisionReopenInput = typeof OrchestrationV2DecisionReopenInput.Type;
+
+export const OrchestrationV2DecisionConfirmResult = Schema.Struct({
+  sequence: NonNegativeInt,
+  decision: OrchestrationV2Decision,
+  sourceThreadId: ThreadId,
+  sourceMessageId: MessageId,
+  sourceRunId: RunId,
+  delivery: Schema.Literals(["steered", "queued"]),
+});
+export type OrchestrationV2DecisionConfirmResult = typeof OrchestrationV2DecisionConfirmResult.Type;
+
+export const OrchestrationV2DecisionCancelResult = Schema.Struct({
+  sequence: NonNegativeInt,
+  decision: OrchestrationV2Decision,
+  sourceNotified: Schema.Boolean,
+});
+export type OrchestrationV2DecisionCancelResult = typeof OrchestrationV2DecisionCancelResult.Type;
+
+export const OrchestrationV2DecisionReopenResult = Schema.Struct({
+  sequence: NonNegativeInt,
+  decision: OrchestrationV2Decision,
+});
+export type OrchestrationV2DecisionReopenResult = typeof OrchestrationV2DecisionReopenResult.Type;
+
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
 
@@ -477,6 +558,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  /** Server-owned: presence makes this a decision thread with a stable source issue. */
+  decision: Schema.optional(OrchestrationV2Decision),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -2151,6 +2234,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  /** Absent outside decision threads; the source relation is authoritative. */
+  decision: Schema.optional(OrchestrationV2Decision),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2339,8 +2424,18 @@ export const OrchestrationV2StoredEvent = Schema.Struct({
 });
 export type OrchestrationV2StoredEvent = typeof OrchestrationV2StoredEvent.Type;
 
+export const OrchestrationV2DecisionJson = OrchestrationV2Decision.mapFields((fields) => ({
+  ...fields,
+  createdAt: Schema.DateTimeUtcFromString,
+  updatedAt: Schema.DateTimeUtcFromString,
+  completedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+  cancelledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
+}));
+export type OrchestrationV2DecisionJson = typeof OrchestrationV2DecisionJson.Type;
+
 export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((fields) => ({
   ...fields,
+  decision: Schema.optional(OrchestrationV2DecisionJson),
   createdAt: Schema.DateTimeUtcFromString,
   updatedAt: Schema.DateTimeUtcFromString,
   archivedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -2774,6 +2869,7 @@ export type OrchestrationV2LatestVisibleMessageSummaryJson =
 
 export const OrchestrationV2ThreadShellJson = OrchestrationV2ThreadShell.mapFields((fields) => ({
   ...fields,
+  decision: Schema.optional(OrchestrationV2DecisionJson),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
   latestRunCompletedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtcFromString)),
@@ -2993,6 +3089,8 @@ export const OrchestrationV2Command = Schema.Union([
     linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
     /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    /** Only the server sets this, for an agent-created decision thread. */
+    decision: Schema.optional(OrchestrationV2DecisionIssue),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -3646,6 +3744,29 @@ const OrchestrationV2InternalCommand = Schema.Union([
       }),
     ),
   }),
+  /**
+   * Final decision answers come from an authenticated client, so these stay
+   * internal: no MCP tool or generic pending-request path can build one.
+   */
+  Schema.Struct({
+    type: Schema.Literal("decision.confirm"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedRevision: NonNegativeInt,
+    answer: TrimmedNonEmptyString.check(Schema.isMaxLength(120_000)),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("decision.cancel"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedRevision: NonNegativeInt,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("decision.reopen"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    expectedRevision: NonNegativeInt,
+  }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
@@ -3653,6 +3774,9 @@ export type OrchestrationV2ServerCommand = OrchestrationV2Command | Orchestratio
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  decisionConfirm: "orchestration.decisionConfirm",
+  decisionCancel: "orchestration.decisionCancel",
+  decisionReopen: "orchestration.decisionReopen",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
@@ -4400,6 +4524,18 @@ export const OrchestrationV2RpcSchemas = {
   dispatchCommand: {
     input: OrchestrationV2Command,
     output: OrchestrationV2DispatchCommandResult,
+  },
+  decisionConfirm: {
+    input: OrchestrationV2DecisionConfirmInput,
+    output: OrchestrationV2DecisionConfirmResult,
+  },
+  decisionCancel: {
+    input: OrchestrationV2DecisionCancelInput,
+    output: OrchestrationV2DecisionCancelResult,
+  },
+  decisionReopen: {
+    input: OrchestrationV2DecisionReopenInput,
+    output: OrchestrationV2DecisionReopenResult,
   },
   getTurnDiff: {
     input: OrchestrationGetTurnDiffInput,

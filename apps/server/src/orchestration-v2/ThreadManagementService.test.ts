@@ -65,6 +65,10 @@ it("stamps authoritative provenance on commands that create threads or messages"
       threadId: ThreadId.make("thread:elsewhere"),
       title: "Somewhere else",
     },
+    decision: {
+      sourceThreadId: ThreadId.make("thread:elsewhere"),
+      question: "Forged decision",
+    },
   };
 
   const stamped = ThreadManagementService.withCreationProvenance(command, {
@@ -77,6 +81,7 @@ it("stamps authoritative provenance on commands that create threads or messages"
   });
   expect(stamped).not.toHaveProperty("linkOrigin");
   expect(stamped).not.toHaveProperty("delegatedFrom");
+  expect(stamped).not.toHaveProperty("decision");
 });
 
 const layerReceiptsTest = CommandReceiptStore.layer.pipe(
@@ -200,6 +205,37 @@ it.effect(
     }).pipe(Effect.provide(layerTest));
   },
 );
+
+it.effect("reuses accepted or uncertain attempts and advances only durable rejections", () => {
+  const layer = layerDispatchChokepointTest(ServerSettings.layerTest({}))([]);
+  return Effect.gen(function* () {
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const baseId = CommandId.make("decision:start:retry");
+    expect(yield* threads.nextCommandAttemptId(baseId)).toEqual(baseId);
+    const first = {
+      commandId: baseId,
+      threadId: ThreadId.make("thread:decision-retry"),
+      commandType: "message.dispatch" as const,
+      acceptedAt: yield* DateTime.now,
+      resultSequence: 0,
+      status: "rejected" as const,
+      error: "Provider temporarily unavailable",
+    };
+    yield* receipts.insertIfAbsent(first);
+    const retryId = yield* threads.nextCommandAttemptId(baseId);
+    expect(retryId).not.toEqual(baseId);
+    expect(yield* threads.nextCommandAttemptId(baseId)).toEqual(retryId);
+    yield* receipts.insertIfAbsent({
+      ...first,
+      commandId: retryId,
+      status: "accepted",
+      resultSequence: 1,
+      error: null,
+    });
+    expect(yield* threads.nextCommandAttemptId(baseId)).toEqual(retryId);
+  }).pipe(Effect.provide(layer));
+});
 
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
   Effect.gen(function* () {

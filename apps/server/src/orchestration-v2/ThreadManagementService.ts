@@ -27,6 +27,12 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2DecisionCancelInput,
+  type OrchestrationV2DecisionCancelResult,
+  type OrchestrationV2DecisionConfirmInput,
+  type OrchestrationV2DecisionConfirmResult,
+  type OrchestrationV2DecisionReopenInput,
+  type OrchestrationV2DecisionReopenResult,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2SubagentHandoff,
@@ -93,8 +99,13 @@ export function withCreationProvenance(
 ): OrchestrationV2Command {
   switch (command.type) {
     case "thread.create": {
-      // Only the server stamps a link's origin, so a client cannot set one.
-      const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
+      // Only the server stamps a link's origin or decision issue, so a client cannot set one.
+      const {
+        linkOrigin: _linkOrigin,
+        delegatedFrom: _delegatedFrom,
+        decision: _decision,
+        ...rest
+      } = command;
       return { ...rest, ...provenance };
     }
     case "message.dispatch":
@@ -388,6 +399,24 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2DispatchResult,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
+  readonly confirmDecision: (
+    input: OrchestrationV2DecisionConfirmInput,
+  ) => Effect.Effect<
+    OrchestrationV2DecisionConfirmResult,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
+  readonly cancelDecision: (
+    input: OrchestrationV2DecisionCancelInput,
+  ) => Effect.Effect<
+    OrchestrationV2DecisionCancelResult,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
+  readonly reopenDecision: (
+    input: OrchestrationV2DecisionReopenInput,
+  ) => Effect.Effect<
+    OrchestrationV2DecisionReopenResult,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
   readonly getMessageCount: Orchestrator.OrchestratorV2["Service"]["getMessageCount"];
@@ -460,6 +489,9 @@ export interface ThreadManagementServiceShape {
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly nextCommandAttemptId: (
+    commandId: CommandId,
+  ) => Effect.Effect<CommandId, CommandReceiptStore.CommandReceiptStoreV2Error>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -774,6 +806,19 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => Option.none()),
       Effect.map(Option.isSome),
     );
+
+  const nextCommandAttemptId = Effect.fn("ThreadManagementService.nextCommandAttemptId")(function* (
+    baseId: CommandId,
+  ) {
+    let commandId = baseId;
+    let attempt = 0;
+    // Only a durable rejection permits a new identity; unknown and accepted attempts replay.
+    while (true) {
+      const receipt = yield* receipts.getByCommandId(commandId);
+      if (Option.isNone(receipt) || receipt.value.status !== "rejected") return commandId;
+      commandId = CommandId.make(`${baseId}:attempt:${++attempt}`);
+    }
+  });
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -1129,6 +1174,64 @@ const make = Effect.gen(function* () {
     ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
       Effect.andThen(orchestrator.dispatch(command)),
+    );
+
+  const decisionCommandResult = Effect.fnUntraced(function* (
+    command:
+      | Extract<OrchestrationV2ServerCommand, { readonly type: "decision.confirm" }>
+      | Extract<OrchestrationV2ServerCommand, { readonly type: "decision.cancel" }>
+      | Extract<OrchestrationV2ServerCommand, { readonly type: "decision.reopen" }>,
+  ) {
+    const result = yield* dispatch(command);
+    if (result.decisionResult?.type !== command.type.replace("decision.", "")) {
+      return yield* new Orchestrator.OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The decision command did not produce a decision result.",
+      });
+    }
+    return { sequence: result.sequence, decisionResult: result.decisionResult };
+  });
+
+  const confirmDecision: ThreadManagementServiceShape["confirmDecision"] = (input) =>
+    decisionCommandResult({ type: "decision.confirm", ...input }).pipe(
+      Effect.flatMap(({ sequence, decisionResult }) =>
+        decisionResult.type !== "confirm"
+          ? Effect.die("unreachable")
+          : Effect.succeed({
+              sequence,
+              decision: decisionResult.decision,
+              sourceThreadId: decisionResult.sourceThreadId,
+              sourceMessageId: decisionResult.sourceMessageId,
+              sourceRunId: decisionResult.sourceRunId,
+              delivery: decisionResult.delivery,
+            } satisfies OrchestrationV2DecisionConfirmResult),
+      ),
+    );
+
+  const cancelDecision: ThreadManagementServiceShape["cancelDecision"] = (input) =>
+    decisionCommandResult({ type: "decision.cancel", ...input }).pipe(
+      Effect.flatMap(({ sequence, decisionResult }) =>
+        decisionResult.type !== "cancel"
+          ? Effect.die("unreachable")
+          : Effect.succeed({
+              sequence,
+              decision: decisionResult.decision,
+              sourceNotified: decisionResult.sourceNotified,
+            } satisfies OrchestrationV2DecisionCancelResult),
+      ),
+    );
+
+  const reopenDecision: ThreadManagementServiceShape["reopenDecision"] = (input) =>
+    decisionCommandResult({ type: "decision.reopen", ...input }).pipe(
+      Effect.flatMap(({ sequence, decisionResult }) =>
+        decisionResult.type !== "reopen"
+          ? Effect.die("unreachable")
+          : Effect.succeed({
+              sequence,
+              decision: decisionResult.decision,
+            } satisfies OrchestrationV2DecisionReopenResult),
+      ),
     );
 
   const getProjectThreadRecords: ThreadManagementServiceShape["getProjectThreadRecords"] = (
@@ -1935,6 +2038,9 @@ const make = Effect.gen(function* () {
       );
     }),
     dispatch,
+    confirmDecision,
+    cancelDecision,
+    reopenDecision,
     getThreadHistoryPage: Effect.fn("ThreadManagementService.getThreadHistoryPage")(
       function (threadId, cursor, throughEntryId, conversationOnly, workMode) {
         return ensureProjectionTranscript(threadId).pipe(
@@ -2004,6 +2110,7 @@ const make = Effect.gen(function* () {
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
+    nextCommandAttemptId,
     waitForThread,
     settleAfterRun,
     settleThread,

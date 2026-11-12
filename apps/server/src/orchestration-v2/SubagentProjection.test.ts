@@ -137,6 +137,14 @@ it.effect.each(["provider", "mcp"] as const)(
         pinnedAt: parentCreatedAt,
         pinOrderKey: "a0",
         autoSettleDisabledAt: parentCreatedAt,
+        decision: {
+          sourceThreadId: ThreadId.make("thread:decision-source"),
+          question: "Keep the cache?",
+          status: "discussing" as const,
+          revision: 1,
+          createdAt: parentCreatedAt,
+          updatedAt: parentCreatedAt,
+        },
       };
       const childThread = makeSubagentChildThread({
         parentThread,
@@ -151,6 +159,7 @@ it.effect.each(["provider", "mcp"] as const)(
         creationSource,
       });
 
+      assert.isUndefined(childThread.decision);
       assert.equal(parentThread.pinnedAt, parentCreatedAt);
       assert.equal(parentThread.pinOrderKey, "a0");
       assert.isNull(childThread.pinnedAt);

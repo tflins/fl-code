@@ -105,16 +105,32 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
+const refuseDecisionThreadWrites = McpInvocationContext.McpInvocationContext.pipe(
+  Effect.flatMap((scope) =>
+    scope.thread?.decision === true
+      ? Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "This is a decision thread. Discuss the question with the user; only the user's confirmed answer can change the source thread.",
+          }),
+        )
+      : Effect.void,
+  ),
+);
+
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
   Effect.tap(assertNotCodeQa),
   Effect.tap(assertLiveCaller),
+  Effect.tap(() => refuseDecisionThreadWrites),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
   Effect.tap(assertNotCodeQa),
   Effect.tap(assertLiveCaller),
+  Effect.tap(() => refuseDecisionThreadWrites),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(

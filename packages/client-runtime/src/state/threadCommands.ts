@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import { Atom } from "effect/reactivity";
 import {
   WS_METHODS,
+  ORCHESTRATION_V2_WS_METHODS,
   type EnvironmentId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -120,6 +121,24 @@ export function createThreadEnvironmentAtoms<R, E>(
   });
 
   const commands = {
+    confirmDecision: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:confirm-decision",
+      tag: ORCHESTRATION_V2_WS_METHODS.decisionConfirm,
+      scheduler,
+      concurrency,
+    }),
+    cancelDecision: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:cancel-decision",
+      tag: ORCHESTRATION_V2_WS_METHODS.decisionCancel,
+      scheduler,
+      concurrency,
+    }),
+    reopenDecision: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:reopen-decision",
+      tag: ORCHESTRATION_V2_WS_METHODS.decisionReopen,
+      scheduler,
+      concurrency,
+    }),
     create: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:create",
       execute: createThread,

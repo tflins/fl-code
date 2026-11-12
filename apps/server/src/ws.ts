@@ -1913,6 +1913,25 @@ export const layerWsRpc = (
         return yield* mutateProjectWithClone(projectService, projectCloneTracker, mutation);
       });
 
+      const decisionCommand = Effect.fnUntraced(function* <A, E>(
+        commandId: CommandId,
+        commandType: string,
+        run: Effect.Effect<A, E>,
+      ) {
+        return yield* startup.enqueueCommand(run).pipe(
+          Effect.mapError((cause) => {
+            const detail = userFacingDispatchErrorMessage(cause);
+            return new OrchestrationV2DispatchCommandError({
+              commandId,
+              commandType,
+              message: detail ?? "Failed to dispatch orchestration V2 command",
+              ...(detail === undefined ? {} : { detail }),
+              cause,
+            });
+          }),
+        );
+      });
+
       const handlers = ServerWsRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
@@ -1962,6 +1981,48 @@ export const layerWsRpc = (
                     });
                   }),
                 ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.decisionConfirm]: (input) =>
+          Effect.annotateCurrentSpan({
+            "orchestration_v2.command_id": input.commandId,
+            "orchestration_v2.command_type": "decision.confirm",
+            "orchestration_v2.thread_id": input.threadId,
+          }).pipe(
+            Effect.andThen(
+              decisionCommand(
+                input.commandId,
+                "decision.confirm",
+                threadManagement.confirmDecision(input),
+              ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.decisionCancel]: (input) =>
+          Effect.annotateCurrentSpan({
+            "orchestration_v2.command_id": input.commandId,
+            "orchestration_v2.command_type": "decision.cancel",
+            "orchestration_v2.thread_id": input.threadId,
+          }).pipe(
+            Effect.andThen(
+              decisionCommand(
+                input.commandId,
+                "decision.cancel",
+                threadManagement.cancelDecision(input),
+              ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.decisionReopen]: (input) =>
+          Effect.annotateCurrentSpan({
+            "orchestration_v2.command_id": input.commandId,
+            "orchestration_v2.command_type": "decision.reopen",
+            "orchestration_v2.thread_id": input.threadId,
+          }).pipe(
+            Effect.andThen(
+              decisionCommand(
+                input.commandId,
+                "decision.reopen",
+                threadManagement.reopenDecision(input),
+              ),
             ),
           ),
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),

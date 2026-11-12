@@ -44,6 +44,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DelegatedCompletionCohort,
   type OrchestrationV2DelegatedCompletionDelivery,
+  type OrchestrationV2Decision,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ProviderSession,
@@ -373,11 +374,29 @@ export const OrchestratorV2Error = Schema.Union([
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
+export type OrchestratorDecisionCommandResult =
+  | {
+      readonly type: "confirm";
+      readonly decision: OrchestrationV2Decision;
+      readonly sourceThreadId: ThreadId;
+      readonly sourceMessageId: MessageId;
+      readonly sourceRunId: RunId;
+      readonly delivery: "steered" | "queued";
+    }
+  | {
+      readonly type: "cancel";
+      readonly decision: OrchestrationV2Decision;
+      readonly sourceNotified: boolean;
+    }
+  | { readonly type: "reopen"; readonly decision: OrchestrationV2Decision };
+
 export interface OrchestratorV2DispatchResult {
   readonly sequence: number;
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
   /** The command id was already accepted; analytics skip it. */
   readonly replayed?: true;
+  /** Set by an internal decision command for the service that dispatched it. */
+  readonly decisionResult?: OrchestratorDecisionCommandResult;
 }
 
 export interface OrchestratorV2Shape {
@@ -596,6 +615,9 @@ export function threadHasUnfinishedWork(records: {
 function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
   switch (command.type) {
     case "thread.create":
+    case "decision.confirm":
+    case "decision.cancel":
+    case "decision.reopen":
     case "thread.archive":
     case "thread.unarchive":
     case "thread.delete":
@@ -3339,6 +3361,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
+      ...(command.decision === undefined
+        ? {}
+        : {
+            decision: {
+              ...command.decision,
+              status: "discussing" as const,
+              revision: 1,
+              createdAt: now,
+              updatedAt: now,
+            },
+          }),
       lineage: {
         parentThreadId: null,
         relationshipToParent: null,
@@ -6278,14 +6311,43 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : run.id === command.restartContinuationOfRunId,
     )?.delegatedTaskId;
 
-    if (projection.thread.settledOverride !== null) {
+    const automaticWake =
+      command.notification !== undefined || command.delegatedCompletion !== undefined;
+    const decision = projection.thread.decision;
+    const userReopensDecision =
+      decision !== undefined &&
+      decision.status !== "discussing" &&
+      command.createdBy === "user" &&
+      !automaticWake;
+    // Late success notices preserve completion; failures still need attention.
+    const handledDecisionStaysSettled =
+      decision !== undefined &&
+      decision.status !== "discussing" &&
+      !userReopensDecision &&
+      command.notification?.outcome !== "failed";
+    if (
+      userReopensDecision ||
+      (projection.thread.settledOverride !== null && !handledDecisionStaysSettled)
+    ) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
+        ...(userReopensDecision && decision !== undefined
+          ? {
+              decision: {
+                ...decision,
+                status: "discussing" as const,
+                revision: decision.revision + 1,
+                completedAt: null,
+                cancelledAt: null,
+                updatedAt: now,
+              },
+            }
+          : {}),
         settledOverride: null,
         settledAt: null,
         unsettledAt:
-          projection.thread.settledOverride === "active"
+          projection.thread.settledOverride === "active" && !userReopensDecision
             ? (projection.thread.unsettledAt ?? null)
             : now,
         updatedAt: now,
@@ -6294,7 +6356,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         events,
         command,
       )({
-        type: "thread.unsettled",
+        type:
+          projection.thread.settledOverride === null
+            ? "thread.metadata-updated"
+            : "thread.unsettled",
         threadId: command.threadId,
         providerInstanceId: thread.providerInstanceId,
         occurredAt: now,
@@ -6304,8 +6369,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // Background wakes and delegated completions continue work the user already snoozed, so
     // only a message someone actually sent ends the snooze.
-    const automaticWake =
-      command.notification !== undefined || command.delegatedCompletion !== undefined;
     if (projection.thread.snoozedUntil != null && !automaticWake) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
@@ -8542,6 +8605,321 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       request: { type: "provider-turn.start", runId },
     } satisfies PendingOrchestrationEffectV2;
     yield* Ref.update(effects, (existing) => [...existing, pendingEffect]);
+  });
+
+  const resolveDecisionAnswerDispatchMode = Effect.fn("Orchestrator.decisionAnswerDispatchMode")(
+    function* (
+      command: Extract<OrchestrationV2ServerCommand, { readonly type: "decision.confirm" }>,
+      sourceThreadId: ThreadId,
+    ) {
+      const { run, providerThread, providerTurn } = yield* projectionStore
+        .getRunningTurnContext(sourceThreadId)
+        .pipe(mapDispatchError(command));
+      if (run !== undefined && providerTurn !== undefined && providerThread?.providerSessionId) {
+        const session = yield* providerSessions
+          .get(providerThread.providerSessionId)
+          .pipe(Effect.orElseSucceed(() => Option.none()));
+        if (
+          Option.isSome(session) &&
+          session.value.providerSession.capabilities.turns.supportsActiveSteering &&
+          session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools !== true
+        ) {
+          return { type: "steer_active" as const, targetRunId: run.id };
+        }
+      }
+      return { type: "queue_after_active" as const };
+    },
+  );
+
+  const decisionAnswerText = (input: {
+    readonly decisionThreadId: ThreadId;
+    readonly question: string;
+    readonly answer: string;
+  }) =>
+    `The user confirmed a decision in decision thread ${input.decisionThreadId}.\n\nQuestion: ${input.question}\n\nConfirmed answer:\n${input.answer}`;
+
+  const dispatchDecisionConfirm = Effect.fn("orchestrationV2.dispatch.decisionConfirm")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "decision.confirm" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const decisionProjection = yield* projectionStore
+      .getThreadRecords(command.threadId, ["runs"])
+      .pipe(mapDispatchError(command));
+    const thread = decisionProjection.thread;
+    const decision = thread.decision;
+    if (thread.deletedAt !== null || decision === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not a decision thread.`,
+      });
+    }
+    if (decision.revision !== command.expectedRevision) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Decision ${command.threadId} moved on. Reload it before confirming.`,
+      });
+    }
+    if (decision.status !== "discussing") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          decision.status === "completed"
+            ? "This decision is already confirmed. Reopen it to record a correction."
+            : "This decision was cancelled. Reopen it to continue the discussion.",
+      });
+    }
+    const source = yield* projectionStore.getThreadRecords(decision.sourceThreadId, []).pipe(
+      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: decision.sourceThreadId, cause }),
+      ),
+    );
+    if (source === null || source.thread.deletedAt !== null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Source thread ${decision.sourceThreadId} is unavailable.`,
+      });
+    }
+
+    const nextRevision = decision.revision + 1;
+    const sourceMessageId = MessageId.make(`decision-answer:${command.threadId}:${nextRevision}`);
+    const dispatchMode = yield* resolveDecisionAnswerDispatchMode(command, decision.sourceThreadId);
+    // The source message and the decision's completion commit together, so a
+    // failed dispatch cannot settle the decision or lose the confirmed text.
+    yield* dispatchMessage(
+      {
+        type: "message.dispatch",
+        commandId: command.commandId,
+        threadId: decision.sourceThreadId,
+        messageId: sourceMessageId,
+        text: decisionAnswerText({
+          decisionThreadId: command.threadId,
+          question: decision.question,
+          answer: command.answer,
+        }),
+        attachments: [],
+        createdBy: "user",
+        creationSource: "server",
+        dispatchMode,
+      },
+      events,
+      effects,
+    );
+    const createdRunId = (yield* Ref.get(events)).flatMap((event) =>
+      event.type === "run.created" &&
+      event.threadId === decision.sourceThreadId &&
+      event.payload.userMessageId === sourceMessageId
+        ? [event.payload.id]
+        : [],
+    )[0];
+    const sourceRunId =
+      createdRunId ?? (dispatchMode.type === "steer_active" ? dispatchMode.targetRunId : undefined);
+    if (sourceRunId === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The source thread did not accept the decision message.",
+      });
+    }
+
+    const now = yield* DateTime.now;
+    const completed: OrchestrationV2Decision = {
+      ...decision,
+      status: "completed",
+      revision: nextRevision,
+      finalAnswer: command.answer,
+      confirmationId: command.commandId,
+      sourceMessageId,
+      completedAt: now,
+      cancelledAt: null,
+      updatedAt: now,
+    };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...thread,
+        decision: completed,
+        settledOverride: "settled",
+        settledAt: now,
+        unsettledAt: null,
+        snoozedUntil: null,
+        snoozedAt: null,
+        updatedAt: now,
+      },
+    });
+    return {
+      sourceThreadId: decision.sourceThreadId,
+      sourceMessageId,
+      sourceRunId,
+      delivery: createdRunId === undefined ? ("steered" as const) : ("queued" as const),
+      decision: completed,
+    };
+  });
+
+  const dispatchDecisionCancel = Effect.fn("orchestrationV2.dispatch.decisionCancel")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "decision.cancel" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, [])
+      .pipe(mapDispatchError(command));
+    const thread = projection.thread;
+    const decision = thread.decision;
+    if (thread.deletedAt !== null || decision === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not a decision thread.`,
+      });
+    }
+    if (decision.revision !== command.expectedRevision) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Decision ${command.threadId} moved on. Reload it before cancelling.`,
+      });
+    }
+    if (decision.status !== "discussing") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Only a decision still under discussion can be cancelled.",
+      });
+    }
+    const source = yield* projectionStore.getThreadRecords(decision.sourceThreadId, []).pipe(
+      Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+      Effect.mapError(
+        (cause) => new OrchestratorProjectionError({ threadId: decision.sourceThreadId, cause }),
+      ),
+    );
+    const sourceAvailable = source !== null && source.thread.deletedAt === null;
+    const sourceNotified =
+      sourceAvailable &&
+      (yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: decision.sourceThreadId,
+          messageId: MessageId.make(`decision-cancel:${command.threadId}:${decision.revision}`),
+          text: `Decision thread ${command.threadId} was cancelled without an answer.`,
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "server",
+          dispatchMode: { type: "queue_after_active" },
+          notification: {
+            source: { kind: "system" },
+            outcome: "cancelled",
+            summary: "Decision cancelled without an answer.",
+          },
+        },
+        events,
+        effects,
+      ).pipe(Effect.as(true)));
+
+    const now = yield* DateTime.now;
+    const cancelled: OrchestrationV2Decision = {
+      ...decision,
+      status: "cancelled",
+      cancellationNotified: sourceNotified,
+      revision: decision.revision + 1,
+      cancelledAt: now,
+      completedAt: null,
+      updatedAt: now,
+    };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...thread,
+        decision: cancelled,
+        settledOverride: "settled",
+        settledAt: now,
+        unsettledAt: null,
+        snoozedUntil: null,
+        snoozedAt: null,
+        updatedAt: now,
+      },
+    });
+    return { decision: cancelled, sourceNotified };
+  });
+
+  const dispatchDecisionReopen = Effect.fn("orchestrationV2.dispatch.decisionReopen")(function* (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "decision.reopen" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, [])
+      .pipe(mapDispatchError(command));
+    const thread = projection.thread;
+    const decision = thread.decision;
+    if (thread.deletedAt !== null || decision === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Thread ${command.threadId} is not a decision thread.`,
+      });
+    }
+    if (decision.revision !== command.expectedRevision) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This decision changed. Reload it before reopening the discussion.",
+      });
+    }
+    if (decision.status === "discussing") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "This decision is already open for discussion.",
+      });
+    }
+
+    const now = yield* DateTime.now;
+    const reopened: OrchestrationV2Decision = {
+      ...decision,
+      status: "discussing",
+      revision: decision.revision + 1,
+      completedAt: null,
+      cancelledAt: null,
+      updatedAt: now,
+    };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.metadata-updated",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        ...thread,
+        decision: reopened,
+        settledOverride: null,
+        settledAt: null,
+        unsettledAt: now,
+        snoozedUntil: null,
+        snoozedAt: null,
+        updatedAt: now,
+      },
+    });
+    return { decision: reopened };
   });
 
   const dispatchDelegatedTaskRequest = Effect.fn("orchestrationV2.dispatch.delegatedTaskRequest")(
@@ -13887,6 +14265,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         readonly reason: string;
       };
       readonly updateDelegatedCompletionOnlyRunId?: RunId;
+      readonly decisionResult?: OrchestratorDecisionCommandResult;
     },
     OrchestratorV2Error
   > {
@@ -13905,10 +14284,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }
       | undefined;
     let updateDelegatedCompletionOnlyRunId: RunId | undefined;
+    let decisionResult: OrchestratorDecisionCommandResult | undefined;
     switch (command.type) {
       case "thread.create":
         yield* dispatchThreadCreate(command, events);
         break;
+      case "decision.confirm": {
+        const result = yield* dispatchDecisionConfirm(command, events, effects);
+        decisionResult = { type: "confirm", ...result };
+        break;
+      }
+      case "decision.cancel": {
+        const result = yield* dispatchDecisionCancel(command, events, effects);
+        decisionResult = { type: "cancel", ...result };
+        break;
+      }
+      case "decision.reopen": {
+        const result = yield* dispatchDecisionReopen(command, events);
+        decisionResult = { type: "reopen", ...result };
+        break;
+      }
       case "thread.visit":
         yield* dispatchThreadVisit(command, events);
         break;
@@ -14290,8 +14685,72 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(updateDelegatedCompletionOnlyRunId === undefined
         ? {}
         : { updateDelegatedCompletionOnlyRunId }),
+      ...(decisionResult === undefined ? {} : { decisionResult }),
     };
   });
+
+  const decisionResultFromStoredEvents = (
+    command: OrchestrationV2ServerCommand,
+    storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+  ): OrchestratorDecisionCommandResult | undefined => {
+    if (
+      command.type !== "decision.confirm" &&
+      command.type !== "decision.cancel" &&
+      command.type !== "decision.reopen"
+    ) {
+      return undefined;
+    }
+    const decision = storedEvents
+      .flatMap(({ event }) =>
+        event.type === "thread.metadata-updated" &&
+        event.threadId === command.threadId &&
+        event.payload.decision !== undefined
+          ? [event.payload.decision]
+          : [],
+      )
+      .at(-1);
+    if (decision === undefined) return undefined;
+    if (command.type === "decision.reopen") return { type: "reopen", decision };
+    if (command.type === "decision.cancel") {
+      return {
+        type: "cancel",
+        decision,
+        sourceNotified: storedEvents.some(
+          ({ event }) =>
+            event.type === "message.updated" &&
+            event.threadId === decision.sourceThreadId &&
+            event.payload.id.startsWith(`decision-cancel:${command.threadId}:`),
+        ),
+      };
+    }
+    const sourceMessageId = decision.sourceMessageId;
+    if (sourceMessageId === null || sourceMessageId === undefined) return undefined;
+    const queuedRun = storedEvents.flatMap(({ event }) =>
+      event.type === "run.created" &&
+      event.threadId === decision.sourceThreadId &&
+      event.payload.userMessageId === sourceMessageId
+        ? [event.payload.id]
+        : [],
+    )[0];
+    const sourceRunId =
+      queuedRun ??
+      storedEvents.flatMap(({ event }) =>
+        event.type === "message.updated" &&
+        event.threadId === decision.sourceThreadId &&
+        event.payload.id === sourceMessageId
+          ? [event.runId]
+          : [],
+      )[0];
+    if (sourceRunId === undefined) return undefined;
+    return {
+      type: "confirm",
+      decision,
+      sourceThreadId: decision.sourceThreadId,
+      sourceMessageId,
+      sourceRunId,
+      delivery: queuedRun === undefined ? "steered" : "queued",
+    };
+  };
 
   const replayCommandReceipt = Effect.fn("orchestrationV2.dispatch.replayReceipt")(function* (
     command: OrchestrationV2ServerCommand,
@@ -14334,10 +14793,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
       );
     }
+    const decisionResult = decisionResultFromStoredEvents(command, storedEvents);
     return {
       sequence: receipt.resultSequence,
       storedEvents,
       replayed: true,
+      ...(decisionResult === undefined ? {} : { decisionResult }),
     } satisfies OrchestratorV2DispatchResult;
   });
 
@@ -14593,6 +15054,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
       ...(committed.committed ? {} : { replayed: true as const }),
+      ...(plan.decisionResult === undefined ? {} : { decisionResult: plan.decisionResult }),
     } satisfies OrchestratorV2DispatchResult;
   }, withCommandMetrics);
 
@@ -14602,6 +15064,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
+    // A decision confirmation writes both threads in one commit. Take the
+    // source lock first so it can never nest inside another source command.
+    if (command.type === "decision.confirm" || command.type === "decision.cancel") {
+      const decisionThread = yield* findThread(command.threadId);
+      const sourceThreadId = decisionThread?.decision?.sourceThreadId;
+      return sourceThreadId === undefined || sourceThreadId === command.threadId
+        ? yield* dispatch
+        : yield* threadDispatch.withLock(sourceThreadId, dispatch);
+    }
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.

@@ -152,6 +152,21 @@ describe("isAutoSettlementCandidate", () => {
   it("never settles, or keeps snoozed, a thread whose guest is waiting on the owner", () => {
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(
+        shell({
+          decision: {
+            sourceThreadId: ThreadId.make("source"),
+            question: "Choose retention",
+            status: "discussing",
+            revision: 1,
+            createdAt: at(-30 * DAY_MS),
+            updatedAt: at(-10 * DAY_MS),
+          },
+        }),
+        NOW_MS,
+      ),
+    ).toBe(false);
+    expect(
+      ThreadSettlementService.isAutoSettlementCandidate(
         shell({ pendingGuestMessageCount: 1 }),
         NOW_MS,
       ),

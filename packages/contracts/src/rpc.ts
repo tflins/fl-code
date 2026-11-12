@@ -1775,6 +1775,24 @@ const WsOrchestrationV2DispatchCommandRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS
   error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationV2DecisionConfirmRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.decisionConfirm, {
+  payload: OrchestrationV2RpcSchemas.decisionConfirm.input,
+  success: OrchestrationV2RpcSchemas.decisionConfirm.output,
+  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2DecisionCancelRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.decisionCancel, {
+  payload: OrchestrationV2RpcSchemas.decisionCancel.input,
+  success: OrchestrationV2RpcSchemas.decisionCancel.output,
+  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+});
+
+const WsOrchestrationV2DecisionReopenRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.decisionReopen, {
+  payload: OrchestrationV2RpcSchemas.decisionReopen.input,
+  success: OrchestrationV2RpcSchemas.decisionReopen.output,
+  error: Schema.Union([OrchestrationV2DispatchCommandError, EnvironmentAuthorizationError]),
+});
+
 const WsOrchestrationV2GetTurnDiffRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.getTurnDiff, {
   payload: OrchestrationV2RpcSchemas.getTurnDiff.input,
   success: OrchestrationV2RpcSchemas.getTurnDiff.output,
@@ -2270,6 +2288,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeAuthAccessRpc,
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
+  WsOrchestrationV2DecisionConfirmRpc,
+  WsOrchestrationV2DecisionCancelRpc,
+  WsOrchestrationV2DecisionReopenRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,
   WsOrchestrationV2StopWorkflowRpc,

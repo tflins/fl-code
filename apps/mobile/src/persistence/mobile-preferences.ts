@@ -1,3 +1,4 @@
+import { DecisionDraft } from "@t3tools/client-runtime/decision-submission";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,6 +26,8 @@ import * as MobileSecureStorage from "./mobile-secure-storage";
 import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-storage";
 
 const PREFERENCES_KEY = "t3code.preferences";
+const DecisionDrafts = Schema.Record(Schema.String, DecisionDraft);
+const isDecisionDrafts = Schema.is(DecisionDrafts);
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
@@ -89,6 +92,7 @@ const ThreadProject = Schema.Struct({
 const isThreadProject = Schema.is(ThreadProject);
 
 export interface Preferences {
+  readonly decisionDrafts?: typeof DecisionDrafts.Type;
   readonly navigationTabOrder?: readonly string[];
   readonly hiddenNavigationTabs?: readonly string[];
   readonly pullRequestHideTestFiles?: boolean;
@@ -175,6 +179,7 @@ const isToolCallVisibility = Schema.is(ToolCallVisibility);
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    decisionDrafts?: typeof DecisionDrafts.Type;
     navigationTabOrder?: readonly string[];
     hiddenNavigationTabs?: readonly string[];
     pullRequestHideTestFiles?: boolean;
@@ -212,6 +217,10 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     pullRequestListFilters?: PullRequestListPreferences;
     workspaceSelections?: WorkspaceSelections;
   } = {};
+
+  if (isDecisionDrafts(parsed.decisionDrafts)) {
+    preferences.decisionDrafts = parsed.decisionDrafts;
+  }
 
   if (Array.isArray(parsed.hiddenNavigationTabs)) {
     preferences.hiddenNavigationTabs = parsed.hiddenNavigationTabs.filter(
