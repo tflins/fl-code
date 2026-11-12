@@ -249,6 +249,35 @@ describe("provider projection", () => {
     expect(projected).toContain("diff:\n  @@ -3,1 +2,2 @@\n  +two\t\n   \n</context>");
   });
 
+  it("carries the review selection side and snapshot identity to the provider", () => {
+    const projected = projectComposerContextForProvider({
+      text: "[Comment](t3-context://v1/review-comment/ctx_r)",
+      records: [
+        {
+          version: 1,
+          contextId: ctx("ctx_r"),
+          kind: "review-comment",
+          label: "app.ts L2",
+          sectionId: "turn:1",
+          sectionTitle: "Turn 1",
+          filePath: "src/app.ts",
+          startIndex: 1,
+          endIndex: 1,
+          rangeLabel: "2",
+          text: "",
+          diff: "@@ -2,1 +2,1 @@\n-two\n+TWO",
+          selection: { start: 2, side: "deletions", end: 2, endSide: "additions" },
+          snapshot: { kind: "git-object", id: "2222222", fileVersion: 7 },
+        },
+      ],
+    });
+    expect(projected).toContain("selection: old side L2 to new side L2");
+    expect(projected).toContain("snapshot: git-object 2222222 (content version 7)");
+    expect(projected).toContain(
+      "This excerpt is the version captured with the question. Re-read the file when current content matters; do not assume the file still matches.",
+    );
+  });
+
   it("emits no terminal lines when the captured range is inverted", () => {
     const projected = projectComposerContextForProvider({
       text: "[log](t3-context://v1/terminal/ctx_t)",

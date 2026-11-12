@@ -14,6 +14,7 @@ import SideChatPane from "./SideChatPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
 import type { SideChatParentPanel } from "../../lib/sideChatPane";
+import type { ReviewCommentContext } from "../../reviewCommentContext";
 import { type RightPanelSurface, useRightPanelStore } from "../../rightPanelStore";
 import {
   PersistentThreadTerminalPanel,
@@ -79,6 +80,10 @@ export function RightPanelSurfaceContent(props: {
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
   readonly sideChatParentPanel: SideChatParentPanel;
+  readonly onAskDiffSelection?: (
+    context: ReviewCommentContext,
+    question: string,
+  ) => Promise<ScopedThreadRef | null>;
 }) {
   const { surface, threadRef, visible, onCloseSurface } = props;
   if (surface === null) return null;
@@ -114,6 +119,10 @@ export function RightPanelSurfaceContent(props: {
             composerDraftTarget={props.composerDraftTarget}
             workspaceMutationId={props.workspaceMutationId}
             visible={visible}
+            askParentPanel={props.sideChatParentPanel}
+            {...(props.onAskDiffSelection === undefined
+              ? {}
+              : { onAskAboutSelection: props.onAskDiffSelection })}
           />
         </Suspense>
       );

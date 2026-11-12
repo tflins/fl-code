@@ -1450,7 +1450,15 @@ function codexThreadRuntimeParams(input: {
         ? {}
         : {
             // Override only T3's servers so launch-argument MCP servers survive.
-            "mcp_servers.t3-code": { ...t3Server, disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL] },
+            "mcp_servers.t3-code": {
+              ...t3Server,
+              disabled_tools: [CODEX_DIRECT_ONLY_T3_TOOL],
+              // Code Q&A runs with approvalPolicy "never". Codex auto-approves only MCP tools
+              // annotated read-only, and t3_thread_read is not (it can deliver child results).
+              ...(input.runtimePolicy?.codeQa === true
+                ? { tools: { t3_thread_read: { approval_mode: "approve" } } }
+                : {}),
+            },
             // Code Mode runs a blocking wait as a nested call, and the model keeps working
             // around it. A second, direct-only registration makes it a plain tool call.
             [`mcp_servers.${CODEX_T3_DIRECT_MCP_SERVER}`]: {

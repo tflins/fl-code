@@ -16,6 +16,7 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  codeQaSideChatThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -1001,6 +1002,100 @@ it.effect("a side chat of an idle parent still starts with the framing note", ()
       handoff!.summaryText.startsWith("You are in a side chat beside the main thread."),
     );
     assert.notInclude(handoff!.summaryText, "Main thread activity");
+  }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect("code Q&A creates one read-only thread per parent, even on concurrent first opens", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const parentId = ThreadId.make("code-qa-parent");
+    const targetId = codeQaSideChatThreadId(parentId);
+    yield* createParent(parentId);
+    yield* writeParentRun({
+      threadId: parentId,
+      runId: RunId.make("code-qa-parent-run"),
+      ordinal: 1,
+      status: "completed",
+      text: "Parent work",
+      stable: true,
+    });
+    const fork = (commandId: string) =>
+      orchestrator.dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make(commandId),
+        sourceThreadId: parentId,
+        targetThreadId: targetId,
+        sourcePoint: { type: "latest_stable" },
+        sideChat: true,
+        codeQa: true,
+        createdBy: "user",
+        creationSource: "web",
+      });
+
+    const opens = yield* Effect.all([fork("code-qa-open-a"), fork("code-qa-open-b")], {
+      concurrency: "unbounded",
+    });
+    assert.equal(opens.filter((open) => open.storedEvents.length > 0).length, 1);
+
+    const created = yield* orchestrator.getThreadProjection(targetId);
+    assert.isTrue(created.thread.lineage.codeQa);
+    assert.isTrue(created.thread.lineage.sideChat);
+    assert.equal(created.thread.lineage.parentThreadId, parentId);
+    assert.equal(created.thread.runtimeMode, "approval-required");
+    assert.equal(created.thread.interactionMode, "default");
+    assert.lengthOf(created.contextTransfers, 1);
+
+    const repeat = yield* fork("code-qa-open-again");
+    assert.lengthOf(repeat.storedEvents, 0);
+    assert.lengthOf((yield* orchestrator.getThreadProjection(targetId)).contextTransfers, 1);
+
+    const wrongTarget = yield* orchestrator
+      .dispatch({
+        type: "thread.fork",
+        commandId: CommandId.make("code-qa-wrong-target"),
+        sourceThreadId: parentId,
+        targetThreadId: ThreadId.make("code-qa-other-target"),
+        sourcePoint: { type: "latest_stable" },
+        sideChat: true,
+        codeQa: true,
+        createdBy: "user",
+        creationSource: "web",
+      })
+      .pipe(Effect.flip);
+    assert.equal(wrongTarget._tag, "OrchestratorDispatchError");
+
+    const raiseMode = yield* orchestrator
+      .dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("code-qa-raise-mode"),
+        threadId: targetId,
+        runtimeMode: "auto",
+      })
+      .pipe(Effect.flip);
+    assert.equal(raiseMode._tag, "OrchestratorDispatchError");
+    assert.equal(
+      (yield* orchestrator.getThreadProjection(targetId)).thread.runtimeMode,
+      "approval-required",
+    );
+
+    yield* orchestrator.dispatch({
+      type: "thread.delete",
+      commandId: CommandId.make("code-qa-delete"),
+      threadId: targetId,
+    });
+    const reopened = yield* fork("code-qa-reopen");
+    assert.isAbove(reopened.storedEvents.length, 0);
+    const nextId = codeQaSideChatThreadId(parentId, 2);
+    const transferEvent = reopened.storedEvents.find(
+      (stored) => stored.event.type === "context-transfer.created",
+    );
+    assert.equal(transferEvent?.event.threadId, nextId);
+    const next = yield* orchestrator.getThreadProjection(nextId);
+    assert.notEqual(nextId, targetId);
+    assert.isTrue(next.thread.lineage.codeQa);
+    assert.equal(next.thread.lineage.parentThreadId, parentId);
+    assert.lengthOf(next.contextTransfers, 1);
+    assert.isNotNull((yield* orchestrator.getThreadProjection(targetId)).thread.deletedAt);
   }).pipe(Effect.provide(forkCases[0]!.layer)),
 );
 

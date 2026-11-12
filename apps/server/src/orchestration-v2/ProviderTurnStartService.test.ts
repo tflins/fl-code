@@ -1710,6 +1710,39 @@ effectIt.effect("leaves the run starting when a session-open failure will be ret
   }),
 );
 
+effectIt.effect("fails the run when code Q&A has no provider that can enforce read-only", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue" });
+    const projection = harness.projection();
+    harness.resolveRuntimePolicy.mockReturnValue(
+      Effect.fail(
+        new RuntimePolicy.RuntimePolicyCodeQaUnsupportedError({
+          threadId: projection.thread.id,
+          providerInstanceId: harness.projection().runs.at(-1)!.providerInstanceId,
+          driver: "grok",
+        }),
+      ) as never,
+    );
+
+    yield* harness.start;
+
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(harness.settledRuns).toEqual(["failed"]);
+    expect(harness.projection().turnItems).toMatchObject([
+      {
+        type: "error",
+        status: "failed",
+        failure: {
+          class: "provider_error",
+          message:
+            "Code Q&A is read-only, and grok cannot enforce that sandbox. Choose a Codex or Claude model for this chat.",
+        },
+      },
+    ]);
+  }),
+);
+
 effectIt.effect("fails the run without a retry when the provider needs sign-in", () =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({

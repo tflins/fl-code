@@ -59,6 +59,7 @@ describe("review comment context parsing", () => {
         endSide: "additions",
       },
       text: "Keep this compatible.",
+      snapshot: { kind: "git-object", id: "abc1234", fileVersion: 42 },
     });
 
     expect(comment).toEqual(
@@ -72,6 +73,8 @@ describe("review comment context parsing", () => {
         text: "Keep this compatible.",
         diff: "@@ -2,1 +2,1 @@\n-two\n+TWO",
         fenceLanguage: "diff",
+        selection: { start: 2, side: "deletions", end: 2, endSide: "additions" },
+        snapshot: { kind: "git-object", id: "abc1234", fileVersion: 42 },
       }),
     );
   });

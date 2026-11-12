@@ -287,6 +287,18 @@ function formatElementDetails(element: ElementContextDetails): string[] {
   return lines;
 }
 
+function formatReviewCommentSelection(
+  selection: NonNullable<
+    Extract<KnownComposerContextRecord, { kind: "review-comment" }>["selection"]
+  >,
+): string {
+  const describe = (line: number, side: "additions" | "deletions") =>
+    `${side === "deletions" ? "old" : "new"} side L${line}`;
+  const start = describe(selection.start, selection.side);
+  const end = describe(selection.end, selection.endSide);
+  return start === end ? start : `${start} to ${end}`;
+}
+
 function formatComposerContextProviderPayload(record: KnownComposerContextRecord): string {
   switch (record.kind) {
     case "image":
@@ -332,6 +344,17 @@ function formatComposerContextProviderPayload(record: KnownComposerContextRecord
         `range: ${record.rangeLabel} (${record.startIndex}-${record.endIndex})`,
         `section: ${record.sectionTitle}`,
       ];
+      if (record.selection !== undefined) {
+        lines.push(`selection: ${formatReviewCommentSelection(record.selection)}`);
+      }
+      if (record.snapshot !== undefined) {
+        lines.push(
+          `snapshot: ${record.snapshot.kind} ${record.snapshot.id}${record.snapshot.fileVersion === undefined ? "" : ` (content version ${record.snapshot.fileVersion})`}`,
+        );
+        lines.push(
+          "This excerpt is the version captured with the question. Re-read the file when current content matters; do not assume the file still matches.",
+        );
+      }
       if (record.text.trim()) lines.push("comment:", indent(record.text.trim()));
       if (record.diff.trim()) {
         lines.push(`${record.fenceLanguage ?? "diff"}:`, indent(record.diff.replace(/\n+$/, "")));

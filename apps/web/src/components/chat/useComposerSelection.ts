@@ -107,6 +107,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
   const hasStartedSession = activeRuntime !== null;
   const runtimeProviderInstanceId = activeRuntime?.providerInstanceId ?? null;
   const currentModelSelection = activeThread?.modelSelection ?? null;
+  const codeQaDriverByInstance = new Map(
+    providerStatuses.map((provider) => [provider.instanceId, provider.driver] as const),
+  );
   const getModelDisabledReason = makeModelDisabledReason(
     currentModelSelection
       ? {
@@ -116,6 +119,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
           currentProviderInstanceId: runtimeProviderInstanceId,
         }
       : null,
+    activeThread?.lineage.codeQa === true
+      ? { driverByInstance: codeQaDriverByInstance }
+      : undefined,
   );
 
   const onProviderModelSelect = (

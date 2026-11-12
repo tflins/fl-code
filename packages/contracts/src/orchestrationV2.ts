@@ -156,8 +156,23 @@ export const OrchestrationV2AppThreadLineage = Schema.Struct({
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
   rootThreadId: ThreadId,
   sideChat: Schema.optional(Schema.Boolean),
+  /** A server-owned read-only Q&A side chat. No client flag can grant or widen it. */
+  codeQa: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2AppThreadLineage = typeof OrchestrationV2AppThreadLineage.Type;
+
+/**
+ * One code Q&A side chat per parent. Generation 1 keeps a stable id for concurrent first opens.
+ * After that chat is deleted, the server advances the generation so its history stays deleted.
+ */
+export const codeQaSideChatThreadId = (parentThreadId: ThreadId, generation = 1): ThreadId =>
+  ThreadId.make(
+    generation <= 1 ? `code-qa:${parentThreadId}` : `code-qa:${parentThreadId}:${generation}`,
+  );
+
+/** Only these drivers can enforce the read-only sandbox code Q&A requires. */
+export const isCodeQaReadOnlyDriver = (driver: string | null | undefined): boolean =>
+  driver === "codex" || driver === "claudeAgent";
 
 /** Subagents and side chats live inside their parent's view, never in thread lists. */
 export const isListedThreadLineage = (lineage: OrchestrationV2AppThreadLineage): boolean =>
@@ -3366,6 +3381,7 @@ export const OrchestrationV2Command = Schema.Union([
     sourcePoint: OrchestrationV2ThreadForkSourcePoint,
     title: Schema.optional(TrimmedNonEmptyString),
     sideChat: Schema.optional(Schema.Boolean),
+    codeQa: Schema.optional(Schema.Boolean),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

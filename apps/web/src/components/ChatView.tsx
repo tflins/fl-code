@@ -59,6 +59,7 @@ import {
   AuthTerminalOperateScope,
   type AssistantCitation,
   type ChatFileAttachment,
+  isCodeQaReadOnlyDriver,
   isProviderNativeSubagentThread,
   orchestrationV2WorktreePending,
   type EnvironmentId,
@@ -130,6 +131,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { ShieldAlert } from "lucide-react";
 import { BackgroundThreadContext } from "./chat/backgroundThread";
 import { WorkspaceMutationIdContext } from "./chat/ChatMarkdownMedia";
 import { useLocation, useNavigate } from "@tanstack/react-router";
@@ -386,6 +388,7 @@ import {
   type LocalThreadErrorEntry,
   makeThreadErrorSetter,
 } from "./ChatView.logic";
+import type { ReviewCommentContext } from "../reviewCommentContext";
 
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
@@ -2505,6 +2508,16 @@ export default function ChatView(props: ChatViewProps) {
       (item.text.trim().toLowerCase() !== "/compact" || item.attachments.length > 0),
   );
   const pendingHandoffSelection = composerSelectedModelSelection ?? activeThread?.modelSelection;
+  const codeQaSelectedProvider =
+    pendingHandoffSelection === undefined
+      ? undefined
+      : providerStatuses.find(
+          (provider) => provider.instanceId === pendingHandoffSelection.instanceId,
+        );
+  const codeQaModelNotice =
+    activeThread?.lineage.codeQa === true && !isCodeQaReadOnlyDriver(codeQaSelectedProvider?.driver)
+      ? `Code Q&A is read-only. ${codeQaSelectedProvider?.displayName ?? "This provider"} can't enforce its sandbox. Choose a Codex or Claude model to send.`
+      : undefined;
   const pendingHandoffSelectionUsable = providerInstanceEntries.some(
     (entry) =>
       entry.instanceId === pendingHandoffSelection?.instanceId &&
@@ -2668,6 +2681,17 @@ export default function ChatView(props: ChatViewProps) {
     const extensionStatusItems = extensionStatusBanner === null ? [] : [extensionStatusBanner];
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
+    const codeQaModelItems: ComposerBannerStackItem[] =
+      codeQaModelNotice === undefined
+        ? []
+        : [
+            {
+              id: "code-qa-read-only-model",
+              variant: "warning",
+              icon: <ShieldAlert />,
+              title: codeQaModelNotice,
+            },
+          ];
     // An approval's feedback goes to that approval; the armed session waits for the next message.
     const freshSessionItems =
       freshSessionAvailable && freshSessionArmed && activePendingApproval === null
@@ -2681,6 +2705,7 @@ export default function ChatView(props: ChatViewProps) {
         ...extensionStatusItems,
         ...usageLimitsItems,
         ...projectCloneItems,
+        ...codeQaModelItems,
         ...freshSessionItems,
         ...systemComposerBannerItems,
       ];
@@ -2692,6 +2717,7 @@ export default function ChatView(props: ChatViewProps) {
       ...extensionStatusItems,
       ...usageLimitsItems,
       ...projectCloneItems,
+      ...codeQaModelItems,
       ...freshSessionItems,
       ...systemComposerBannerItems,
       branchMismatchBannerItem({
@@ -2834,6 +2860,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread?.lineage.sideChat !== true &&
     !isSubagentThread &&
     serverConfig?.environment.capabilities.sideChats === true;
+  const codeQaOffered = sideChatsOffered && serverConfig?.environment.capabilities.codeQa === true;
   const sideChat = useSideChat({
     threadRef: sideChatsOffered && isServerThread ? activeThreadRef : null,
     readSettings: () => ({
@@ -2870,6 +2897,9 @@ export default function ChatView(props: ChatViewProps) {
                 : null;
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const sendSideChatStable = useStableCallback((prompt: string) => sideChat.open(prompt));
+  const openDiffAskStable = useStableCallback((context: ReviewCommentContext, question: string) =>
+    sideChat.openAsk({ context, question }),
+  );
   const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
     useTimelineRewind({
       environmentId,
@@ -3257,6 +3287,7 @@ export default function ChatView(props: ChatViewProps) {
       onSendAnnotation={sendPreviewAnnotationStable}
       onCloseSurface={closeRightPanelSurface}
       sideChatParentPanel={sideChatParentPanel}
+      {...(codeQaOffered ? { onAskDiffSelection: openDiffAskStable } : {})}
       terminal={{
         launchContext: activeTerminalLaunchContext ?? null,
         keybindings,

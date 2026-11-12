@@ -1,4 +1,8 @@
-import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
+import {
+  isCodeQaReadOnlyDriver,
+  type OrchestrationV2ProviderTurn,
+  type RunAttemptId,
+} from "@t3tools/contracts";
 import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
@@ -1227,8 +1231,14 @@ export function makeModelDisabledReason(
     Parameters<typeof getStartedThreadModelChangeBlockReason>[0],
     "nextModelSelection"
   > | null,
+  codeQa?: {
+    readonly driverByInstance: ReadonlyMap<ProviderInstanceId, ProviderDriverKind>;
+  },
 ) {
   return (instanceId: ProviderInstanceId, model: string): string | null => {
+    if (codeQa !== undefined && !isCodeQaReadOnlyDriver(codeQa.driverByInstance.get(instanceId))) {
+      return "Code Q&A is read-only. Choose a Codex or Claude model, which can enforce its sandbox.";
+    }
     if (!context) return null;
     const reason = getStartedThreadModelChangeBlockReason({
       ...context,

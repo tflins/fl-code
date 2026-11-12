@@ -156,6 +156,18 @@ export const assertFullAccess = (context: Caller, message: string) =>
     ? Effect.void
     : Effect.fail(new OrchestratorMcpFailure({ code: "capability_denied", message }));
 
+/** A code Q&A thread answers questions; server-side tools must not let its model write or act elsewhere. */
+export const assertNotCodeQa = (context: Caller) =>
+  context.caller?.lineage.codeQa === true
+    ? Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "This is a read-only code Q&A chat. It can read and explain, but it cannot change files, start work, use the browser or device, or act on other threads.",
+        }),
+      )
+    : Effect.void;
+
 export const resolveProjectId = (context: Caller, projectId: ProjectId | undefined) =>
   projectId !== undefined
     ? Effect.succeed(projectId)

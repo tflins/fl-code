@@ -493,6 +493,14 @@ const CODEX_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy
   interactionMode: "default",
   cwd: "/workspace",
 });
+const CODEX_CODE_QA_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+  runtimeMode: "approval-required",
+  interactionMode: "default",
+  cwd: "/workspace",
+  codeQa: true,
+  approvalPolicy: "never",
+  sandboxPolicy: { type: "readOnly" },
+});
 const T3_THREAD_ENV_KEY = "shell_environment_policy.set.T3CODE_THREAD_ID";
 const threadEnvOf = (params: unknown) =>
   Predicate.hasProperty(params, "config") && Predicate.hasProperty(params.config, T3_THREAD_ENV_KEY)
@@ -1242,6 +1250,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onUsageLimits?: CodexAdapterV2.CodexAdapterV2Options["onUsageLimits"],
     promptSuggestions: Effect.Effect<boolean> = Effect.succeed(false),
     onNotification: (method: string) => Effect.Effect<void> = () => Effect.void,
+    runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = CODEX_TEST_RUNTIME_POLICY,
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1320,13 +1329,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         threadId,
         providerSessionId: ProviderSessionId.make(`provider-session-${transcript.scenario}`),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        runtimePolicy,
         promptSuggestions,
       });
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CODEX_TEST_MODEL_SELECTION,
-        runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        runtimePolicy,
       });
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       const firstTerminal = yield* Deferred.make<void>();
@@ -1711,6 +1720,139 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               tool_timeout_sec: 3_900,
               http_headers: { Authorization: "Bearer secret-codex-token" },
               disabled_tools: ["t3_thread_wait"],
+            },
+            "mcp_servers.t3-code-direct": {
+              url: "http://127.0.0.1:43123/mcp",
+              tool_timeout_sec: 3_900,
+              http_headers: { Authorization: "Bearer secret-codex-token" },
+              enabled_tools: ["t3_thread_wait"],
+              omit_tools_from: ["code_mode", "deferred"],
+            },
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("allows only t3_thread_read without approval inside code Q&A MCP sessions", () =>
+    Effect.gen(function* () {
+      const scenario = "code-qa-mcp-read-approval";
+      const nativeThreadId = "code-qa-read-thread";
+      yield* (yield* McpProviderSessions.McpProviderSessions).set({
+        environmentId: EnvironmentId.make("environment-codex-mcp"),
+        threadId: ThreadId.make(`thread-${scenario}`),
+        providerSessionId: `provider-session-${scenario}`,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        endpoint: "http://127.0.0.1:43123/mcp",
+        authorizationHeader: "Bearer secret-codex-token",
+        browserToolsAvailable: true,
+      });
+      const requests: Array<unknown> = [];
+      const resumeRequests: Array<unknown> = [];
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused",
+              prompt: "unused",
+            }).slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "thread/resume",
+              frame: {
+                id: 3,
+                method: "thread/resume",
+                params: {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/resume",
+              frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+            },
+          ],
+        }),
+        () => Effect.void,
+        (method, params) =>
+          Effect.sync(() => {
+            if (method === "thread/start") requests.push(params);
+            if (method === "thread/resume") resumeRequests.push(params);
+          }),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        CODEX_CODE_QA_RUNTIME_POLICY,
+      );
+      assert.deepEqual(requests, [
+        {
+          cwd: "/workspace",
+          model: "gpt-5.4",
+          config: {
+            "tools.update_plan.enabled": true,
+            mcp_optional_startup_grace_ms: 10_000,
+            "features.concurrent_reasoning_summaries": true,
+            "shell_environment_policy.set.T3CODE_THREAD_ID": `thread-${scenario}`,
+            "mcp_servers.t3-code": {
+              url: "http://127.0.0.1:43123/mcp",
+              tool_timeout_sec: 3_900,
+              http_headers: { Authorization: "Bearer secret-codex-token" },
+              disabled_tools: ["t3_thread_wait"],
+              tools: {
+                t3_thread_read: { approval_mode: "approve" },
+              },
+            },
+            "mcp_servers.t3-code-direct": {
+              url: "http://127.0.0.1:43123/mcp",
+              tool_timeout_sec: 3_900,
+              http_headers: { Authorization: "Bearer secret-codex-token" },
+              enabled_tools: ["t3_thread_wait"],
+              omit_tools_from: ["code_mode", "deferred"],
+            },
+          },
+        },
+      ]);
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: CODEX_CODE_QA_RUNTIME_POLICY,
+      });
+      assert.deepEqual(resumeRequests, [
+        {
+          threadId: nativeThreadId,
+          excludeTurns: true,
+          cwd: "/workspace",
+          model: "gpt-5.4",
+          config: {
+            "tools.update_plan.enabled": true,
+            mcp_optional_startup_grace_ms: 10_000,
+            "features.concurrent_reasoning_summaries": true,
+            "shell_environment_policy.set.T3CODE_THREAD_ID": `thread-${scenario}`,
+            "mcp_servers.t3-code": {
+              url: "http://127.0.0.1:43123/mcp",
+              tool_timeout_sec: 3_900,
+              http_headers: { Authorization: "Bearer secret-codex-token" },
+              disabled_tools: ["t3_thread_wait"],
+              tools: {
+                t3_thread_read: { approval_mode: "approve" },
+              },
             },
             "mcp_servers.t3-code-direct": {
               url: "http://127.0.0.1:43123/mcp",

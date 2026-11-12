@@ -4,7 +4,9 @@ import {
   type ModelSelection,
   type OrchestrationV2AppThread,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  ProviderInteractionMode,
   type RuntimeMode,
   type ServerProvider,
   ThreadId,
@@ -32,6 +34,8 @@ function makeThread(input: {
   readonly now: DateTime.Utc;
   readonly worktreePath: string | null;
   readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: ProviderInteractionMode;
+  readonly codeQa?: boolean;
 }): OrchestrationV2AppThread {
   const threadId = ThreadId.make("thread:runtime-policy");
   return {
@@ -43,7 +47,7 @@ function makeThread(input: {
     providerInstanceId,
     modelSelection,
     runtimeMode: input.runtimeMode ?? "full-access",
-    interactionMode: "default",
+    interactionMode: input.interactionMode ?? "default",
     branch: null,
     worktreePath: input.worktreePath,
     activeProviderThreadId: null,
@@ -51,6 +55,14 @@ function makeThread(input: {
       parentThreadId: null,
       relationshipToParent: null,
       rootThreadId: threadId,
+      ...(input.codeQa === true
+        ? {
+            codeQa: true,
+            sideChat: true,
+            parentThreadId: ThreadId.make("thread:parent"),
+            relationshipToParent: "fork" as const,
+          }
+        : {}),
     },
     forkedFrom: null,
     createdAt: input.now,
@@ -71,6 +83,7 @@ const supportedRuntimeModesByInstance = new Map<ProviderInstanceId, ReadonlyArra
 ]);
 const providerInstanceFor = (instanceId: ProviderInstanceId) =>
   ({
+    driverKind: ProviderDriverKind.make(instanceId),
     snapshot: {
       getSnapshot: Effect.succeed({
         supportedRuntimeModes: supportedRuntimeModesByInstance.get(instanceId),
@@ -154,6 +167,44 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+
+  it.effect("forces a native read-only policy for code Q&A on sandbox-capable providers", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      for (const instanceId of [providerInstanceId, ProviderInstanceId.make("claudeAgent")]) {
+        const resolved = yield* policy.resolve({
+          thread: makeThread({
+            now,
+            worktreePath: "/work",
+            runtimeMode: "full-access",
+            interactionMode: "plan",
+            codeQa: true,
+          }),
+          modelSelection: { instanceId, model: "test-model" },
+        });
+        assert.equal(resolved.runtimeMode, "approval-required");
+        assert.equal(resolved.interactionMode, "default");
+        assert.equal(resolved.approvalPolicy, "never");
+        assert.deepEqual(resolved.sandboxPolicy, { type: "readOnly" });
+        assert.equal(resolved.codeQa, true);
+      }
+    }),
+  );
+
+  it.effect("refuses code Q&A when the selected provider cannot enforce read-only", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const refused = yield* policy
+        .resolve({
+          thread: makeThread({ now, worktreePath: "/work", codeQa: true }),
+          modelSelection: { instanceId: grokInstanceId, model: "test-model" },
+        })
+        .pipe(Effect.flip);
+      assert.equal(refused._tag, "RuntimePolicyCodeQaUnsupportedError");
     }),
   );
 });

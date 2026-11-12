@@ -536,10 +536,11 @@ const previewSnapshotFailure = Effect.fn("previewSnapshotFailure")(function <E>(
     typeof firstFailure._tag === "string"
       ? firstFailure._tag
       : "PreviewSnapshotError";
-  // Preview errors contain server-authored recovery guidance, never page output.
-  const message = isPreviewAutomationError(firstFailure)
-    ? firstFailure.message
-    : parameterValidationMessage(firstFailure);
+  // Preview and access errors contain server-authored guidance, never page output.
+  const message =
+    isPreviewAutomationError(firstFailure) || isOrchestratorMcpFailure(firstFailure)
+      ? firstFailure.message
+      : parameterValidationMessage(firstFailure);
   const result = new McpSchema.CallToolResult({
     isError: true,
     structuredContent: {

@@ -60,6 +60,7 @@ export interface ThreadForkServiceV2Shape {
     readonly targetThreadId: ThreadId;
     readonly title?: string;
     readonly sideChat?: boolean;
+    readonly codeQa?: boolean;
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
@@ -77,6 +78,13 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
     plan: Effect.fn("ThreadForkService.plan")(function* (input) {
       const { sourceRun } = input;
       const sourceLineage = input.sourceProjection.thread.lineage;
+      if (input.codeQa === true && input.sideChat !== true) {
+        return yield* new ThreadForkPlanError({
+          sourceThreadId: input.sourceProjection.thread.id,
+          targetThreadId: input.targetThreadId,
+          cause: "A code Q&A thread must be a side chat.",
+        });
+      }
       // A task a linked environment delegated here is a subagent of a remote thread.
       if (
         input.sideChat &&
@@ -111,6 +119,10 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         creationSource: input.creationSource,
         id: input.targetThreadId,
         title: input.title ?? `${input.sourceProjection.thread.title} fork`,
+        // The runtime policy enforces read-only again for every turn; these are the visible modes.
+        ...(input.codeQa === true
+          ? { runtimeMode: "approval-required" as const, interactionMode: "default" as const }
+          : {}),
         // The source's title job completes only on the source thread.
         titleRegeneration: null,
         activeProviderThreadId: null,
@@ -119,6 +131,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           relationshipToParent: "fork",
           rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           ...(input.sideChat ? { sideChat: true } : {}),
+          ...(input.codeQa === true ? { codeQa: true } : {}),
         },
         forkedFrom:
           sourceRun === null

@@ -76,6 +76,7 @@ import {
   TurnItemId,
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
+  codeQaSideChatThreadId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
@@ -1541,7 +1542,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   /** Side chats live inside their parent, so deleting the parent deletes them too. */
-  const liveSideChatIds = Effect.fn("Orchestrator.liveSideChatIds")(
+  const sideChatChildren = Effect.fn("Orchestrator.sideChatChildren")(
     function* (threadId: ThreadId) {
       const { contextTransfers } = yield* projectionStore
         .getThreadRecords(threadId, ["contextTransfers"])
@@ -1550,7 +1551,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ProjectionStoreThreadNotFoundError: () => Effect.succeed({ contextTransfers: [] }),
           }),
         );
-      const sideChatIds: Array<ThreadId> = [];
+      const children: Array<OrchestrationV2AppThread> = [];
       for (const transfer of contextTransfers) {
         if (transfer.type !== "fork" || transfer.sourceThreadId !== threadId) continue;
         const child = yield* projectionStore
@@ -1558,11 +1559,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .pipe(
             Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
           );
-        if (child?.lineage.sideChat === true && child.deletedAt === null) {
-          sideChatIds.push(child.id);
+        if (child?.lineage.sideChat === true && child.lineage.parentThreadId === threadId) {
+          children.push(child);
         }
       }
-      return sideChatIds;
+      return children;
+    },
+    (effect, threadId) =>
+      effect.pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
+  );
+
+  const liveSideChatIds = Effect.fn("Orchestrator.liveSideChatIds")(
+    function* (threadId: ThreadId) {
+      return (yield* sideChatChildren(threadId))
+        .filter((child) => child.deletedAt === null)
+        .map((child) => child.id);
     },
     (effect, threadId) =>
       effect.pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
@@ -3668,6 +3679,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (
+      thread.lineage.codeQa === true &&
+      ((command.type === "thread.runtime-mode.set" &&
+        command.runtimeMode !== "approval-required") ||
+        (command.type === "thread.interaction-mode.set" && command.interactionMode !== "default"))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause:
+          "This code Q&A side chat is read-only; its runtime and interaction modes cannot be raised.",
+      });
+    }
+    if (
       command.type === "thread.pull-request.watch" &&
       command.watching &&
       isProviderNativeSubagentThread(thread)
@@ -5034,6 +5058,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.source_point_type": command.sourcePoint.type,
     });
 
+    if (command.codeQa === true) {
+      if (command.sideChat !== true) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "A code Q&A thread must be a side chat.",
+        });
+      }
+      const baseTarget = codeQaSideChatThreadId(command.sourceThreadId);
+      const generation =
+        command.targetThreadId === baseTarget
+          ? 1
+          : command.targetThreadId.startsWith(`${baseTarget}:`)
+            ? Number(command.targetThreadId.slice(baseTarget.length + 1))
+            : Number.NaN;
+      if (!Number.isSafeInteger(generation) || generation < 1) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `A code Q&A thread for ${command.sourceThreadId} must use target ${baseTarget}.`,
+        });
+      }
+    }
+
     const sourceProjection = yield* projectionStore
       .getThreadRecords(command.sourceThreadId, [
         "runs",
@@ -5071,10 +5119,38 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.sourceThreadId} has no worktree yet. Start the side chat once its worktree is set up.`,
       });
     }
-    if ((yield* findThread(command.targetThreadId)) !== null) {
+    const codeQaChildren =
+      command.codeQa === true
+        ? (yield* sideChatChildren(command.sourceThreadId)).filter(
+            (child) => child.lineage.codeQa === true,
+          )
+        : [];
+    // A live code Q&A chat owns the parent association. A repeat or concurrent open lands there.
+    if (codeQaChildren.some((child) => child.deletedAt === null)) return;
+    let targetThreadId = command.targetThreadId;
+    if (codeQaChildren.some((child) => child.id === targetThreadId)) {
+      // The requested generation is deleted. Advance instead of resurrecting its messages.
+      let generation = 1;
+      while (
+        (yield* findThread(codeQaSideChatThreadId(command.sourceThreadId, generation))) !== null
+      ) {
+        generation += 1;
+      }
+      targetThreadId = codeQaSideChatThreadId(command.sourceThreadId, generation);
+    }
+    const existingTarget = yield* findThread(targetThreadId);
+    if (existingTarget !== null) {
+      if (
+        command.codeQa === true &&
+        existingTarget.lineage.codeQa === true &&
+        existingTarget.lineage.parentThreadId === command.sourceThreadId &&
+        existingTarget.deletedAt === null
+      ) {
+        return;
+      }
       return yield* new OrchestratorThreadAlreadyExistsError({
         commandId: command.commandId,
-        threadId: command.targetThreadId,
+        threadId: targetThreadId,
       });
     }
 
@@ -5105,7 +5181,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const transferId = yield* mapDispatchError(command)(
       idAllocator.allocate.contextTransfer({
         sourceThreadId: sourceProjection.thread.id,
-        targetThreadId: command.targetThreadId,
+        targetThreadId,
         type: "fork",
       }),
     );
@@ -5123,9 +5199,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { threadId: sourceProjection.thread.id }
             : contextSourcePointForRun(sourceProjection, sourceRun),
         transferId,
-        targetThreadId: command.targetThreadId,
+        targetThreadId,
         ...(command.title === undefined ? {} : { title: command.title }),
         ...(command.sideChat ? { sideChat: true } : {}),
+        ...(command.codeQa ? { codeQa: true } : {}),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,
@@ -5134,14 +5211,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     yield* emitEvent({
       type: "thread.created",
-      threadId: command.targetThreadId,
+      threadId: targetThreadId,
       providerInstanceId: targetThread.providerInstanceId,
       occurredAt: now,
       payload: targetThread,
     });
     yield* emitEvent({
       type: "context-transfer.created",
-      threadId: command.targetThreadId,
+      threadId: targetThreadId,
       providerInstanceId: transfer.sourceProviderInstanceId ?? targetThread.providerInstanceId,
       occurredAt: now,
       payload: transfer,
@@ -14308,6 +14385,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (planned) =>
           planned.events.length > 0 ||
           isUnobservedAcknowledgement(command) ||
+          (command.type === "thread.fork" && command.codeQa === true) ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
           command.type === "thread.stop" ||

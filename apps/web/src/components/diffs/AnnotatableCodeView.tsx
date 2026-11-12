@@ -8,10 +8,17 @@ import type {
 } from "@pierre/diffs";
 import type { CodeViewHandle } from "@pierre/diffs/react";
 import type { EnvironmentId, ProjectId, ScopedThreadRef } from "@t3tools/contracts";
-import { useState, type ReactNode, type Ref } from "react";
+import { MessageCircle } from "lucide-react";
+import { lazy, Suspense, useState, type ReactNode, type Ref } from "react";
 
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
-import { fnv1a32, resolveFileDiffPath, resolveFileDiffPreviousPath } from "~/lib/diffRendering";
+import {
+  buildFileDiffSnapshot,
+  fnv1a32,
+  resolveFileDiffPath,
+  resolveFileDiffPreviousPath,
+} from "~/lib/diffRendering";
+import { diffAskContextId } from "~/lib/diffAskContext";
 import {
   buildDiffReviewComment,
   restoreDiffReviewCommentRange,
@@ -19,15 +26,21 @@ import {
 } from "~/reviewCommentContext";
 
 import { nextFileCommentId } from "../files/fileCommentAnnotations";
+import type { SideChatParentPanel } from "../../lib/sideChatPane";
 import { DiffCommentAnnotation } from "./DiffCommentAnnotation";
 import { StyledDiffCodeView, type StyledDiffCodeViewOptions } from "./StyledDiffCodeView";
 
+const DiffAskPanel = lazy(() =>
+  import("./DiffAskPanel").then((module) => ({ default: module.DiffAskPanel })),
+);
+
 interface DiffCommentAnnotationEntry {
   id: string;
-  kind: "draft" | "comment";
+  kind: "draft" | "comment" | "ask";
   range: SelectedLineRange;
   rangeLabel: string;
   text: string;
+  sideChatRef?: ScopedThreadRef | undefined;
 }
 
 interface DiffCommentAnnotationGroup {
@@ -99,6 +112,11 @@ interface AnnotatableCodeViewProps {
     collapsed: boolean,
   ) => ReactNode;
   onRevealSearchMatch: (fileKey: string) => void;
+  onAskAboutSelection?: (
+    context: ReviewCommentContext,
+    question: string,
+  ) => Promise<ScopedThreadRef | null>;
+  askParentPanel?: SideChatParentPanel | undefined;
 }
 
 interface DiffSelectionContext {
@@ -123,6 +141,8 @@ export function AnnotatableCodeView({
   renderHeaderFilenameSuffix,
   renderHeaderPrefix,
   onRevealSearchMatch,
+  onAskAboutSelection,
+  askParentPanel,
 }: AnnotatableCodeViewProps) {
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const removeReviewComment = useComposerDraftStore((store) => store.removeReviewComment);
@@ -140,6 +160,14 @@ export function AnnotatableCodeView({
     annotation: DiffCommentLineAnnotation;
   } | null>(null);
   const [draftText, setDraftText] = useState("");
+  const [ask, setAsk] = useState<{
+    fileKey: string;
+    filePath: string;
+    previousFilePath: string;
+    annotation: DiffCommentLineAnnotation;
+  } | null>(null);
+  const [askPending, setAskPending] = useState(false);
+  const parentThreadRef = typeof composerDraftTarget === "string" ? null : composerDraftTarget;
 
   const filesByKey = new Map(files.map((file) => [file.fileKey, file]));
   if (
@@ -155,6 +183,17 @@ export function AnnotatableCodeView({
     setDraft(null);
     setDraftText("");
     setSelectedLines(null);
+  }
+  if (
+    ask !== null &&
+    !filesByKey.has(ask.fileKey) &&
+    !pendingFiles.some(
+      (file) =>
+        resolveFileDiffPath(file) === ask.filePath &&
+        resolveFileDiffPreviousPath(file) === ask.previousFilePath,
+    )
+  ) {
+    setAsk(null);
   }
   const items: CodeViewDiffItem<DiffCommentAnnotationGroup>[] = files.map(
     ({ fileDiff, filePath, fileKey, fileVersion, collapsed }) => {
@@ -176,7 +215,11 @@ export function AnnotatableCodeView({
             text: comment.text,
           });
         }, []);
-      const annotations = draft?.fileKey === fileKey ? [...persisted, draft.annotation] : persisted;
+      const annotations = [
+        ...(ask?.fileKey === fileKey ? [ask.annotation] : []),
+        ...(draft?.fileKey === fileKey ? [draft.annotation] : []),
+        ...persisted,
+      ];
       return {
         id: fileKey,
         type: "diff",
@@ -187,7 +230,8 @@ export function AnnotatableCodeView({
           `${fileVersion}:${collapsed ? "1" : "0"}:${annotations
             .flatMap((annotation) =>
               annotation.metadata.entries.map(
-                (entry) => `${entry.id}:${entry.rangeLabel}:${entry.text}`,
+                (entry) =>
+                  `${entry.id}:${entry.kind}:${entry.rangeLabel}:${entry.text}:${entry.sideChatRef?.threadId ?? ""}`,
               ),
             )
             .join(":")}`,
@@ -198,6 +242,10 @@ export function AnnotatableCodeView({
 
   const removeEntry = (entryId: string) => {
     setSelectedLines(null);
+    if (ask?.annotation.metadata.entries.some((entry) => entry.id === entryId)) {
+      setAsk(null);
+      return;
+    }
     if (draft?.annotation.metadata.entries.some((entry) => entry.id === entryId)) {
       setDraft(null);
       setDraftText("");
@@ -229,6 +277,7 @@ export function AnnotatableCodeView({
     if (!range) return;
     const item = context.item;
     if (item.type !== "diff") return;
+    setAsk(null);
     const id = nextFileCommentId();
     const filePath = resolveFileDiffPath(item.fileDiff);
     const comment = buildDiffReviewComment({
@@ -251,6 +300,64 @@ export function AnnotatableCodeView({
         lineNumber: range.end,
         metadata: {
           entries: [{ id, kind: "draft", range, rangeLabel: comment.rangeLabel, text: "" }],
+        },
+      },
+    });
+  };
+
+  const beginAsk = async (
+    range: SelectedLineRange | null,
+    context: DiffSelectionContext,
+    question: string,
+  ) => {
+    if (!range || !onAskAboutSelection || !askParentPanel || askPending) return;
+    const item = context.item;
+    if (item.type !== "diff") return;
+    const file = filesByKey.get(item.id);
+    if (!file) return;
+    const captured = buildDiffReviewComment({
+      id: "pending-diff-ask",
+      sectionId,
+      sectionTitle,
+      filePath: file.filePath,
+      fileDiff: item.fileDiff,
+      range,
+      text: "",
+      snapshot: buildFileDiffSnapshot(item.fileDiff, file.fileVersion),
+    });
+    if (!captured) return;
+    const comment = { ...captured, id: diffAskContextId(captured) };
+    setAskPending(true);
+    let sideChatRef: ScopedThreadRef | null;
+    try {
+      sideChatRef = await onAskAboutSelection(comment, question);
+    } catch (error) {
+      setAskPending(false);
+      throw error;
+    }
+    setAskPending(false);
+    if (sideChatRef === null) return;
+    setDraft(null);
+    setDraftText("");
+    setSelectedLines(null);
+    setAsk({
+      fileKey: item.id,
+      filePath: file.filePath,
+      previousFilePath: resolveFileDiffPreviousPath(item.fileDiff),
+      annotation: {
+        side: annotationSide(range),
+        lineNumber: range.end,
+        metadata: {
+          entries: [
+            {
+              id: comment.id,
+              kind: "ask",
+              range,
+              rangeLabel: comment.rangeLabel,
+              text: "",
+              sideChatRef,
+            },
+          ],
         },
       },
     });
@@ -287,32 +394,60 @@ export function AnnotatableCodeView({
           ? renderHeaderPrefix(item.fileDiff, item.id, item.collapsed === true)
           : null
       }
-      renderAnnotation={(...[annotation]) => {
+      renderAnnotation={(...[annotation, , item]) => {
         const hasDraft = annotation.metadata.entries.some((entry) => entry.kind === "draft");
         return (
           <div
             className={hasDraft ? "py-1" : "divide-y divide-border/30 border-y border-border/30"}
           >
-            {annotation.metadata.entries.map((entry) => (
-              <DiffCommentAnnotation
-                key={entry.id}
-                environmentId={environmentId}
-                projectId={projectId}
-                ownerKey={JSON.stringify([
-                  environmentId,
-                  composerDraftTarget,
-                  codeViewKey,
-                  entry.id,
-                ])}
-                kind={entry.kind}
-                rangeLabel={entry.rangeLabel}
-                text={entry.kind === "draft" ? draftText : entry.text}
-                onTextChange={setDraftText}
-                onCancel={() => removeEntry(entry.id)}
-                onComment={(text) => submitEntry(entry.id, text)}
-                onDelete={() => removeEntry(entry.id)}
-              />
-            ))}
+            {annotation.metadata.entries.map((entry) =>
+              entry.kind === "ask" ? (
+                entry.sideChatRef !== undefined && askParentPanel && parentThreadRef ? (
+                  <Suspense key={entry.id} fallback={null}>
+                    <DiffAskPanel
+                      parentRef={parentThreadRef}
+                      sideChatRef={entry.sideChatRef}
+                      filePath={ask?.filePath ?? ""}
+                      rangeLabel={entry.rangeLabel}
+                      parentPanel={askParentPanel}
+                      onClose={() => removeEntry(entry.id)}
+                    />
+                  </Suspense>
+                ) : null
+              ) : (
+                <DiffCommentAnnotation
+                  key={entry.id}
+                  environmentId={environmentId}
+                  projectId={projectId}
+                  ownerKey={JSON.stringify([
+                    environmentId,
+                    composerDraftTarget,
+                    codeViewKey,
+                    entry.id,
+                  ])}
+                  kind={entry.kind}
+                  rangeLabel={entry.rangeLabel}
+                  text={entry.kind === "draft" ? draftText : entry.text}
+                  onTextChange={setDraftText}
+                  onCancel={() => removeEntry(entry.id)}
+                  onComment={(text) => submitEntry(entry.id, text)}
+                  onDelete={() => removeEntry(entry.id)}
+                  pending={entry.kind === "draft" && askPending}
+                  {...(entry.kind === "draft" && onAskAboutSelection && askParentPanel
+                    ? {
+                        secondaryAction: {
+                          label: "Ask",
+                          icon: <MessageCircle className="size-3" />,
+                          allowEmpty: true,
+                          onAction: (text: string) => {
+                            if (item.type === "diff") void beginAsk(entry.range, { item }, text);
+                          },
+                        },
+                      }
+                    : {})}
+                />
+              ),
+            )}
           </div>
         );
       }}

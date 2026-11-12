@@ -5,6 +5,7 @@ import {
   buildFileDiffContentVersion,
   buildFileDiffIdentityKey,
   buildFileDiffRenderKey,
+  buildFileDiffSnapshot,
   getDiffLineStat,
   getRenderablePatch,
   resolveFileDiffPath,
@@ -202,6 +203,71 @@ describe("getRenderablePatch", () => {
     expect(file?.unifiedLineCount).toBe(
       file?.hunks.reduce((total, hunk) => total + hunk.unifiedLineCount, 0),
     );
+  });
+
+  it("names the snapshot by git object when the patch carries one", () => {
+    const parsed = getRenderablePatch(
+      [
+        "diff --git a/example.ts b/example.ts",
+        "index 1111111..2222222 100644",
+        "--- a/example.ts",
+        "+++ b/example.ts",
+        "@@ -1 +1 @@",
+        "-before",
+        "+after",
+      ].join("\n"),
+      "snapshot",
+    );
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    expect(buildFileDiffSnapshot(parsed.files[0]!, 7)).toEqual({
+      kind: "git-object",
+      id: "2222222",
+      fileVersion: 7,
+    });
+  });
+
+  it("uses the deleted file's old object id instead of the zero sentinel", () => {
+    const parsed = getRenderablePatch(
+      [
+        "diff --git a/example.ts b/example.ts",
+        "deleted file mode 100644",
+        "index 1111111..0000000",
+        "--- a/example.ts",
+        "+++ /dev/null",
+        "@@ -1 +0,0 @@",
+        "-before",
+      ].join("\n"),
+      "snapshot",
+    );
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    expect(buildFileDiffSnapshot(parsed.files[0]!, 7)).toEqual({
+      kind: "git-object",
+      id: "1111111",
+      fileVersion: 7,
+    });
+  });
+
+  it("falls back to a content hash when the patch has no object id", () => {
+    const parsed = getRenderablePatch(
+      [
+        "diff --git a/example.ts b/example.ts",
+        "--- a/example.ts",
+        "+++ b/example.ts",
+        "@@ -1 +1 @@",
+        "-before",
+        "+after",
+      ].join("\n"),
+      "snapshot",
+    );
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    expect(buildFileDiffSnapshot(parsed.files[0]!, 7)).toEqual({
+      kind: "content-hash",
+      id: "fnv1a32-7",
+      fileVersion: 7,
+    });
   });
 
   it("retains source-file offsets for checkpoint diffs", () => {

@@ -1,4 +1,5 @@
 import {
+  isCodeQaReadOnlyDriver,
   isRuntimeModeAbove,
   managedRuntimeModeCeilingMessage,
   ModelSelection,
@@ -51,13 +52,33 @@ export class RuntimePolicyAboveCeilingError extends Schema.TaggedError<RuntimePo
   }
 }
 
+/**
+ * Code Q&A needs a provider whose own runtime can enforce a read-only sandbox. A provider that
+ * only has an approval prompt does not qualify, so it is refused instead of running unsandboxed.
+ */
+export class RuntimePolicyCodeQaUnsupportedError extends Schema.TaggedError<RuntimePolicyCodeQaUnsupportedError>()(
+  "RuntimePolicyCodeQaUnsupportedError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    driver: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Code Q&A is read-only, and ${this.driver ?? "this provider"} cannot enforce that sandbox. Choose a Codex or Claude model for this chat.`;
+  }
+}
+
 export const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
 
 export const RuntimePolicyV2Error = Schema.Union([
   RuntimePolicyResolveError,
   RuntimePolicyAboveCeilingError,
+  RuntimePolicyCodeQaUnsupportedError,
 ]);
 export type RuntimePolicyV2Error = typeof RuntimePolicyV2Error.Type;
+
+const CODE_QA_READ_ONLY_SANDBOX = { type: "readOnly" } as const;
 
 export const RuntimePolicyV2Override = Schema.Struct({
   cwd: Schema.optional(Schema.String),
@@ -184,6 +205,26 @@ export const layerFromProjectStore: Layer.Layer<
               }),
             ),
           ));
+        if (input.thread.lineage.codeQa === true) {
+          if (instance === undefined || !isCodeQaReadOnlyDriver(instance.driverKind)) {
+            return yield* new RuntimePolicyCodeQaUnsupportedError({
+              threadId: input.thread.id,
+              providerInstanceId: input.modelSelection.instanceId,
+              driver: instance?.driverKind ?? null,
+            });
+          }
+          // Ignore the thread's stored modes: a user switch, a resumed session, and a fresh turn
+          // all resolve here, so the native read-only policy cannot be widened from the client.
+          return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            cwd,
+            codeQa: true,
+            approvalPolicy: "never",
+            sandboxPolicy: CODE_QA_READ_ONLY_SANDBOX,
+            ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          });
+        }
         return ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: providerRuntimeMode(input.thread.runtimeMode, supportedRuntimeModes),
           interactionMode: input.thread.interactionMode,

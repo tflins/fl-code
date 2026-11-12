@@ -1556,7 +1556,7 @@ function ComposerPromptEditorTiptapInner(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- writes the controlled value and cursor into the Tiptap document before paint
   useLayoutEffect(() => {
     latestValueRef.current = value;
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     const initialSelection = !hasAppliedControlledSelectionRef.current;
     hasAppliedControlledSelectionRef.current = true;
     const normalizedCursor = clampEditorCursor(value, cursor);
@@ -1651,13 +1651,14 @@ function ComposerPromptEditorTiptapInner(
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- restores ProseMirror focus and caret scroll when the keyed editor remounts, capturing focus on teardown
   useLayoutEffect(() => {
-    if (!editor) return;
+    if (!editor || editor.isDestroyed) return;
     if (restoreFocusRef.current) {
       restoreFocusRef.current = false;
       editor.view.focus();
       scrollTiptapCaretIntoView(editor);
     }
     return () => {
+      if (editor.isDestroyed) return;
       // Capture focus before the keyed editor's DOM is removed.
       restoreFocusRef.current = editor.view.hasFocus();
     };

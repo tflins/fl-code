@@ -3,6 +3,7 @@ import {
   boundAttachmentIds,
   buildExpiredTerminalContextToastCopy,
   mergeDirectPreviewAnnotation,
+  makeModelDisabledReason,
   planComposerTurn,
   snapshotComposerSend,
   withMessageContext,
@@ -1237,5 +1238,26 @@ describe("Open in for the host environment", () => {
         }),
       ).toBe(visible);
     }
+  });
+});
+
+describe("makeModelDisabledReason", () => {
+  it("disables code Q&A models whose driver cannot enforce the read-only sandbox", () => {
+    const grokId = ProviderInstanceId.make("grok");
+    const codexId = ProviderInstanceId.make("codex");
+    const getReason = makeModelDisabledReason(null, {
+      driverByInstance: new Map([
+        [grokId, ProviderDriverKind.make("grok")],
+        [codexId, ProviderDriverKind.make("codex")],
+      ]),
+    });
+
+    expect(getReason(grokId, "grok-4")).toContain("read-only");
+    expect(getReason(codexId, "gpt-6")).toBeNull();
+  });
+
+  it("leaves ordinary chat model choices unchanged", () => {
+    const getReason = makeModelDisabledReason(null);
+    expect(getReason(ProviderInstanceId.make("grok"), "grok-4")).toBeNull();
   });
 });

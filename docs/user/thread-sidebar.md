@@ -320,6 +320,19 @@ side chats.
 On mobile, a thread lists its side chats above the composer. Tap one to open it and
 answer its questions.
 
+### Ask about a diff
+
+On web and desktop, select lines in a diff and choose **Ask**. The question opens in
+a read-only side chat beside the diff, and follow-up questions stay there. Each new
+selection is added as its own reference, and answers describe the version of the
+code you selected.
+
+Code Q&A needs a Codex or Claude model because only those providers can enforce its
+read-only sandbox. Other models stay visible but cannot be selected. A chat that
+inherited an unsupported model keeps it until you choose a supported one. Deleting
+the side chat closes the conversation; asking again starts a new chat without the
+deleted messages.
+
 ## Snooze until later
 
 To change the choices in the snooze menu, open **Settings → Threads → Snooze options**.

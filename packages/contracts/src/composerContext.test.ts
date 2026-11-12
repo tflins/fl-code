@@ -141,6 +141,22 @@ describe("ComposerContextRecord", () => {
     expect(Option.isNone(decodeRecord({ ...base, kind: "image", label: "x" }))).toBe(true);
   });
 
+  it("accepts diff selection and snapshot identity alongside legacy review records", () => {
+    const legacy = knownRecords["review-comment"];
+    const enriched = {
+      ...legacy,
+      selection: { start: 2, side: "deletions", end: 2, endSide: "additions" },
+      snapshot: { kind: "git-object", id: "2222222", fileVersion: 7 },
+    };
+
+    expect(Option.isSome(decodeRecord(legacy))).toBe(true);
+    expect(Option.getOrThrow(decodeRecord(enriched))).toMatchObject({
+      kind: "review-comment",
+      selection: enriched.selection,
+      snapshot: enriched.snapshot,
+    });
+  });
+
   it("bounds the serialized payload of future context kinds", () => {
     const unknown = { ...base, kind: "future-thing", label: "Future" };
     expect(Option.isSome(decodeRecord({ ...unknown, payload: "x".repeat(63_998) }))).toBe(true);

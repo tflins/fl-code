@@ -110,6 +110,8 @@ import { DiffFileStatus } from "./diffs/DiffFileStatus";
 import { useThreadRouteRef } from "../hooks/useThreadRouteTarget";
 import { projectCommitUrl } from "@t3tools/client-runtime/change-request-links";
 import { useOpenLink } from "../browser/useOpenLink";
+import type { SideChatParentPanel } from "../lib/sideChatPane";
+import type { ReviewCommentContext } from "../reviewCommentContext";
 
 type DiffThemeType = "light" | "dark";
 const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
@@ -214,6 +216,11 @@ interface DiffPanelProps {
   composerDraftTarget: ScopedThreadRef | DraftId;
   workspaceMutationId: string | null;
   visible: boolean;
+  askParentPanel?: SideChatParentPanel | undefined;
+  onAskAboutSelection?: (
+    context: ReviewCommentContext,
+    question: string,
+  ) => Promise<ScopedThreadRef | null>;
 }
 
 export default function DiffPanel({
@@ -221,6 +228,8 @@ export default function DiffPanel({
   composerDraftTarget,
   workspaceMutationId,
   visible,
+  askParentPanel,
+  onAskAboutSelection,
 }: DiffPanelProps) {
   const resolvedTheme = useRenderedAppearance();
   const settings = useClientSettings((settings) => ({
@@ -1440,6 +1449,8 @@ export default function DiffPanel({
                     sectionId={reviewSectionId}
                     sectionTitle={reviewSectionTitle}
                     composerDraftTarget={composerDraftTarget}
+                    {...(askParentPanel === undefined ? {} : { askParentPanel })}
+                    {...(onAskAboutSelection === undefined ? {} : { onAskAboutSelection })}
                     renderHeaderFilenameSuffix={(fileDiff) => {
                       const path = resolveFileDiffPath(fileDiff);
                       const state = fileStates.get(path);

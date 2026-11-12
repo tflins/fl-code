@@ -27,6 +27,7 @@ import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes
 import {
   assertFullAccess,
   assertLiveCaller,
+  assertNotCodeQa,
   assertTargetWithinLimits,
   type Caller,
   loadCaller,
@@ -106,11 +107,13 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
 
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(loadCaller()),
+  Effect.tap(assertNotCodeQa),
   Effect.tap(assertLiveCaller),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(readCaller()),
+  Effect.tap(assertNotCodeQa),
   Effect.tap(assertLiveCaller),
 );
 
@@ -126,6 +129,9 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
+
+/** A read-declared tool still needs write access for parameter values that write, such as save. */
+export const requireWriteAccess = writingCaller.pipe(Effect.asVoid);
 
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(

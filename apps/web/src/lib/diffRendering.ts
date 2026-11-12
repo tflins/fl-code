@@ -2,6 +2,7 @@ import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import { parseDiffFromFile } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs/types";
 import { READABLE_LIGHT_THEME_NAME } from "./readableSyntaxTheme";
+import type { ReviewCommentSnapshot } from "../reviewCommentContext";
 
 // Light mode uses a darker pierre-light so syntax stays readable on every code surface.
 export const DIFF_THEME_NAMES = {
@@ -264,6 +265,24 @@ export function buildFileDiffContentVersion(fileDiff: FileDiffMetadata): number 
   }
 
   return hash;
+}
+
+/** A git object id is authoritative; hydrated working-tree diffs carry a content hash instead. */
+export function buildFileDiffSnapshot(
+  fileDiff: FileDiffMetadata,
+  fileVersion: number,
+): ReviewCommentSnapshot {
+  // Git writes an all-zero object id for the absent side of a deleted or added file.
+  const isObjectId = (id: string | null | undefined) =>
+    id !== null && id !== undefined && /[^0]/.test(id);
+  const objectId = isObjectId(fileDiff.newObjectId)
+    ? fileDiff.newObjectId
+    : isObjectId(fileDiff.prevObjectId)
+      ? fileDiff.prevObjectId
+      : undefined;
+  return objectId
+    ? { kind: "git-object", id: objectId, fileVersion }
+    : { kind: "content-hash", id: `fnv1a32-${fileVersion.toString(16)}`, fileVersion };
 }
 
 export const DIFF_SURFACE_THEME_UNSAFE_CSS = `

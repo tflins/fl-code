@@ -17,6 +17,7 @@ import {
   parseThreadKey,
   threadKey,
 } from "@t3tools/client-runtime/state/entities";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ScopedProjectRef, ScopedThreadRef } from "@t3tools/contracts";
 import type {
   EnvironmentId,
@@ -335,6 +336,32 @@ export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 5_000): Pro
     atom: environmentThreadShells.threadShellAtom(ref),
     predicate: (thread) => thread !== null,
     timeoutMs,
+  });
+}
+
+/** The server may allocate a new generation after a deleted code Q&A chat. */
+export function waitForCodeQaSideChat(
+  parentRef: ScopedThreadRef,
+  timeoutMs = 5_000,
+): Promise<ScopedThreadRef | null> {
+  const find = () =>
+    readThreadShells().find(
+      (shell) =>
+        shell.environmentId === parentRef.environmentId &&
+        shell.lineage.sideChat === true &&
+        shell.lineage.codeQa === true &&
+        shell.lineage.parentThreadId === parentRef.threadId &&
+        shell.deletedAt === null,
+    );
+  return waitForAtomValue({
+    registry: appAtomRegistry,
+    atom: environmentThreadShells.threadShellsAtom,
+    predicate: () => find() !== undefined,
+    timeoutMs,
+  }).then((found) => {
+    if (!found) return null;
+    const shell = find();
+    return shell === undefined ? null : scopeThreadRef(parentRef.environmentId, shell.id);
   });
 }
 

@@ -12,6 +12,12 @@ const ReviewCommentSelectionSchema = Schema.Struct({
 });
 type ReviewCommentSelection = typeof ReviewCommentSelectionSchema.Type;
 
+export interface ReviewCommentSnapshot {
+  readonly kind: "git-object" | "content-hash";
+  readonly id: string;
+  readonly fileVersion?: number | undefined;
+}
+
 export const ReviewCommentContextSchema = Schema.Struct({
   id: Schema.String,
   sectionId: Schema.String,
@@ -24,6 +30,13 @@ export const ReviewCommentContextSchema = Schema.Struct({
   diff: Schema.String,
   fenceLanguage: Schema.optional(Schema.String),
   selection: Schema.optional(ReviewCommentSelectionSchema),
+  snapshot: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["git-object", "content-hash"]),
+      id: Schema.String,
+      fileVersion: Schema.optional(Schema.Number),
+    }),
+  ),
   pullRequest: Schema.optional(PullRequestContextMetadata),
 });
 
@@ -39,6 +52,7 @@ export interface ReviewCommentContext {
   readonly diff: string;
   readonly fenceLanguage?: string | undefined;
   readonly selection?: ReviewCommentSelection | undefined;
+  readonly snapshot?: ReviewCommentSnapshot | undefined;
   readonly pullRequest?: PullRequestContextMetadata | undefined;
 }
 
@@ -460,6 +474,7 @@ export function buildDiffReviewComment(input: {
   fileDiff: FileDiffMetadata;
   range: SelectedLineRange;
   text: string;
+  snapshot?: ReviewCommentSnapshot | undefined;
 }): ReviewCommentContext | null {
   const includeExpandedContext = !input.fileDiff.isPartial;
   const startIndex = findDiffReviewLineIndex(
@@ -505,6 +520,7 @@ export function buildDiffReviewComment(input: {
       end: input.range.end,
       endSide: input.range.endSide ?? input.range.side ?? "additions",
     },
+    ...(input.snapshot === undefined ? {} : { snapshot: input.snapshot }),
   };
 }
 

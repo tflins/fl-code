@@ -221,6 +221,18 @@ export function reviewCommentContextRecord(
     text: clampContextText(comment.text, COMPOSER_CONTEXT_REVIEW_TEXT_MAX_CHARS),
     diff: clampContextText(comment.diff, COMPOSER_CONTEXT_REVIEW_DIFF_MAX_CHARS),
     ...(comment.fenceLanguage !== undefined ? { fenceLanguage: comment.fenceLanguage } : {}),
+    ...(comment.selection !== undefined ? { selection: comment.selection } : {}),
+    ...(comment.snapshot === undefined
+      ? {}
+      : {
+          snapshot: {
+            kind: comment.snapshot.kind,
+            id: comment.snapshot.id,
+            ...(comment.snapshot.fileVersion === undefined
+              ? {}
+              : { fileVersion: comment.snapshot.fileVersion }),
+          },
+        }),
     ...(comment.pullRequest !== undefined ? { pullRequest: comment.pullRequest } : {}),
   };
 }

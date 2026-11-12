@@ -711,10 +711,18 @@ export const layer: Layer.Layer<
         .pipe(Effect.result);
       if (resolvedPolicy._tag === "Failure") {
         const error = resolvedPolicy.failure;
-        if (error._tag !== "RuntimePolicyAboveCeilingError") return yield* error;
+        if (
+          error._tag !== "RuntimePolicyAboveCeilingError" &&
+          error._tag !== "RuntimePolicyCodeQaUnsupportedError"
+        ) {
+          return yield* error;
+        }
+        const codeQaUnsupported = error._tag === "RuntimePolicyCodeQaUnsupportedError";
         yield* settleStartFailure({
-          signal: "runtime-mode-above-ceiling",
-          title: "Thread mode is above the policy limit",
+          signal: codeQaUnsupported ? "code-qa-provider-unsupported" : "runtime-mode-above-ceiling",
+          title: codeQaUnsupported
+            ? "This model can't run code Q&A read-only"
+            : "Thread mode is above the policy limit",
           error,
           message: error.message,
         });

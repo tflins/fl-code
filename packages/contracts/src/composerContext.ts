@@ -185,6 +185,21 @@ export const ReviewCommentContextRecord = Schema.Struct({
   text: BoundedString(COMPOSER_CONTEXT_REVIEW_TEXT_MAX_CHARS),
   diff: BoundedString(COMPOSER_CONTEXT_REVIEW_DIFF_MAX_CHARS),
   fenceLanguage: Schema.optionalKey(BoundedString(64)),
+  selection: Schema.optionalKey(
+    Schema.Struct({
+      start: NonNegativeInt,
+      side: Schema.Literals(["additions", "deletions"]),
+      end: NonNegativeInt,
+      endSide: Schema.Literals(["additions", "deletions"]),
+    }),
+  ),
+  snapshot: Schema.optionalKey(
+    Schema.Struct({
+      kind: Schema.Literals(["git-object", "content-hash"]),
+      id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      fileVersion: Schema.optionalKey(NonNegativeInt),
+    }),
+  ),
   pullRequest: Schema.optionalKey(PullRequestContextMetadata),
 }).check(Schema.makeFilter((record) => record.endIndex >= record.startIndex));
 export type ReviewCommentContextRecord = typeof ReviewCommentContextRecord.Type;

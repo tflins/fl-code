@@ -12,6 +12,10 @@ Run `vp run icons:export` from the repository root to regenerate the tracked iOS
 
 Exporting requires Icon Composer 2 or newer on macOS. The script selects the newest compatible exporter from Xcode or a standalone Icon Composer installation and pins design generation 26. Set `ICON_COMPOSER_TOOL` to the full path of `Icon Composer.app/Contents/Executables/ictool` to override automatic discovery.
 
+## Fork 桌面图标
+
+FL Code 的 macOS Nightly 打包使用独立栅格源图 [`fork/fl-code-nightly-macos-1024.png`](fork/fl-code-nightly-macos-1024.png)，保留夜空、云层与立体白色字标风格，将字标改为 `FL`。此文件不由 Icon Composer 导出脚本重建；替换时保持 1024×1024、透明外边距和经典 macOS 安全区域。其他平台及通道继续使用上游图标资源。
+
 ## macOS exports
 
 Icon Composer's command-line exporter does not expose the `macOS pre-Tahoe` preset. A plain command-line `macOS` export is full bleed and is not suitable for the desktop app, so the export script intentionally leaves the tracked macOS PNGs unchanged and prints a reminder after every run.

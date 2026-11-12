@@ -93,6 +93,37 @@ const layerTest = McpHttpServer.layerPreviewToolkit.pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
+const codeQaThreadId = ThreadId.make("code-qa:thread-mcp-test");
+const codeQaInvocation = {
+  ...invocation,
+  thread: { ...invocation.thread, threadId: codeQaThreadId },
+};
+const layerCodeQaTest = McpHttpServer.layerPreviewToolkit.pipe(
+  Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+  Layer.provideMerge(
+    Layer.mock(ThreadManagementService.ThreadManagementService)({
+      getThreadShell: (id) =>
+        Effect.succeed(
+          McpToolAccessTestkit.liveThreadShell(
+            id,
+            id === codeQaThreadId
+              ? {
+                  lineage: {
+                    parentThreadId: threadId,
+                    relationshipToParent: "fork" as const,
+                    sideChat: true,
+                    codeQa: true,
+                  },
+                }
+              : {},
+          ),
+        ),
+    }),
+  ),
+  Layer.provideMerge(PreviewAutomationBroker.layer),
+  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-code-qa-test-" })),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
 const layerPullRequestsTest = McpHttpServer.layerPullRequestsToolkit.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
@@ -367,6 +398,33 @@ it.effect.each([{}, { includeImage: false }])(
         });
       }),
     ).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("refuses saving a preview screenshot from code Q&A but allows the unsaved read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      yield* serveSnapshots("mcp-code-qa-client", snapshotResult);
+      const call = (args: Record<string, unknown>) =>
+        server
+          .callTool({ name: "preview_snapshot", arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, codeQaInvocation),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+
+      const saved = yield* call({ tabId: alternateTabId, save: true });
+      expect(saved.isError).toBe(true);
+      expect(JSON.stringify(saved.content)).toContain("read-only code Q&A");
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      expect(yield* fileSystem.exists(config.browserArtifactsDir)).toBe(false);
+
+      const read = yield* call({ tabId: alternateTabId });
+      expect(read.isError).toBe(false);
+      expect(read.structuredContent).toMatchObject({ url: snapshotResult.url });
+    }),
+  ).pipe(Effect.provide(layerCodeQaTest)),
 );
 
 it.effect.each([

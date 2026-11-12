@@ -47,6 +47,7 @@ import {
 } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
+import { CODE_QA_CONTEXT_INSTRUCTIONS } from "@t3tools/shared/diffAsk";
 import { buildCodexAdditionalContext } from "../../apps/server/src/provider/CodexDeveloperInstructions.ts";
 import { makeSideChatContext } from "../../apps/server/src/orchestration-v2/ContextHandoffService.ts";
 import { withInlineContext } from "../../apps/server/src/orchestration-v2/ContextHandoffDelivery.ts";
@@ -95,11 +96,12 @@ const MODELS = {
   "claude-opus-5-5": "Opus 5.5",
   "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
+  "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
 } as const;
 type Model = keyof typeof MODELS;
 /** GPT models replay a Codex capture through CLIProxyAPI, the rest a Claude Code capture. */
-const isCodex = (model: Model): model is Extract<Model, `gpt-${string}`> =>
-  model.startsWith("gpt-");
+const isCodex = (model: Model): model is Extract<Model, `gpt-${string}` | `deepseek-${string}`> =>
+  model.startsWith("gpt-") || model.startsWith("deepseek-");
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 // USD per million tokens. Cache writes use the 5-minute rate.
 const PRICES = {
@@ -115,6 +117,8 @@ const isPricedModel = (model: ShellModel): model is PricedModel => model in PRIC
 const T3_PREFIX = "mcp__t3-code__";
 const RUNTIME_MARKER = "<runtime_info>";
 const TOOL_LOADED = "Tool loaded.";
+/** A case uses this instead of copying the model-facing code Q&A instructions. */
+const CODE_QA_INSTRUCTIONS_PLACEHOLDER = "$CODE_QA_INSTRUCTIONS";
 
 class EvalToolCallError extends Schema.TaggedError<EvalToolCallError>()("EvalToolCallError", {
   tool: Schema.String,
@@ -1017,10 +1021,22 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(turn.text));
   }
-  const userText =
+  const promptContext =
     testCase.promptContext === undefined
+      ? undefined
+      : {
+          records: testCase.promptContext.records.map((record) =>
+            record.kind === "review-comment" &&
+            "text" in record &&
+            record.text === CODE_QA_INSTRUCTIONS_PLACEHOLDER
+              ? { ...record, text: CODE_QA_CONTEXT_INSTRUCTIONS }
+              : record,
+          ),
+        };
+  const userText =
+    promptContext === undefined
       ? testCase.prompt
-      : projectComposerContextForProvider({ text: testCase.prompt, ...testCase.promptContext });
+      : projectComposerContextForProvider({ text: testCase.prompt, ...promptContext });
   const prompt =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });

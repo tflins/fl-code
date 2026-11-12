@@ -11,7 +11,7 @@ import type { ServerProviderSkill } from "@t3tools/contracts";
 import type { Editor } from "@tiptap/core";
 import { redoDepth, undoDepth } from "@tiptap/pm/history";
 import { NodeSelection } from "@tiptap/pm/state";
-import { createElement, createRef, useEffect, useState } from "react";
+import { createElement, createRef, lazy, StrictMode, Suspense, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -338,6 +338,58 @@ it("keeps the caret inside unknown dollar text across rich and plain remounts", 
     editor.commands.insertContent("Y");
   });
   expect(serializeEditorDoc(editor.state.doc).value).toBe("echo $HOXYME now");
+});
+
+it("keeps a suspended composer editable after StrictMode reveals it", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const LazyComposer = lazy(async () => {
+    await gate;
+    return { default: Composer };
+  });
+
+  await using screen = await render(
+    <StrictMode>
+      <Suspense fallback={<span>loading</span>}>
+        <LazyComposer value="first question" richTextEnabled skills={[]} />
+      </Suspense>
+    </StrictMode>,
+    { router: false },
+  );
+  expect(screen.container.textContent).toBe("loading");
+
+  await act(async () => release());
+  await vi.waitFor(() => expect(screen.container.querySelector(".tiptap")).not.toBeNull());
+  const editor = editorIn(screen.container);
+  expect(serializeEditorDoc(editor.state.doc).value).toBe("first question");
+
+  await focusAt(editor, "end");
+  await userEvent.keyboard("{Enter}second question");
+  await vi.waitFor(() =>
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("first question\nsecond question"),
+  );
+});
+
+it("restores focus and draft across fast keyed remounts", async () => {
+  await using screen = await mountEditor("first question");
+  let editor = screen.editor;
+  await focusAt(editor, "end");
+  await userEvent.keyboard("!");
+  await vi.waitFor(() =>
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("first question!"),
+  );
+
+  editor = await screen.update("first question!", false);
+  await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+  editor = await screen.update("first question!", true);
+  await vi.waitFor(() => expect(document.activeElement).toBe(editor.view.dom));
+
+  await userEvent.keyboard("{Enter}second question");
+  await vi.waitFor(() =>
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("first question!\nsecond question"),
+  );
 });
 
 async function focusAt(editor: Editor, position: number | "end") {

@@ -2,6 +2,8 @@ import type { CodeViewDiffItem, FileDiffMetadata, SelectedLineRange } from "@pie
 import { parsePatchFiles } from "@pierre/diffs/utils/parsePatchFiles";
 import { StrictMode, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import { act, render } from "../../../test/render";
 
@@ -47,6 +49,10 @@ vi.mock("./StyledDiffCodeView", () => ({
       )),
 }));
 
+vi.mock("../ChatView", () => ({
+  default: () => <div data-diff-ask-chat />,
+}));
+
 import { AnnotatableCodeView } from "./AnnotatableCodeView";
 import type { StyledDiffCodeView } from "./StyledDiffCodeView";
 
@@ -79,6 +85,16 @@ function view(
   files: ReturnType<typeof file>[],
   codeViewKey = "initial",
   pendingFiles: FileDiffMetadata[] = [],
+  ask?: {
+    onAskAboutSelection: (
+      context: Parameters<
+        NonNullable<ComponentProps<typeof AnnotatableCodeView>["onAskAboutSelection"]>
+      >[0],
+      question: string,
+    ) => Promise<ReturnType<typeof scopeThreadRef> | null>;
+    askParentPanel: NonNullable<ComponentProps<typeof AnnotatableCodeView>["askParentPanel"]>;
+  },
+  composerDraftTarget: ComponentProps<typeof AnnotatableCodeView>["composerDraftTarget"] = target,
 ) {
   return (
     <StrictMode>
@@ -88,11 +104,17 @@ function view(
         pendingFiles={pendingFiles}
         sectionId="unstaged"
         sectionTitle="Uncommitted"
-        composerDraftTarget={target}
+        composerDraftTarget={composerDraftTarget}
         options={{}}
         renderHeaderFilenameSuffix={() => null}
         renderHeaderPrefix={() => null}
         onRevealSearchMatch={() => {}}
+        {...(ask === undefined
+          ? {}
+          : {
+              onAskAboutSelection: ask.onAskAboutSelection,
+              askParentPanel: ask.askParentPanel,
+            })}
       />
     </StrictMode>
   );
@@ -159,5 +181,59 @@ describe("diff comment drafts", () => {
       }),
     ]);
     expect(container.querySelector("p")?.textContent).toBe("Keep this draft");
+  });
+});
+
+describe("diff selection questions", () => {
+  it("opens a side chat panel for the selected snapshot without sending", async () => {
+    using _drafts = setup();
+    const sideChatRef = scopeThreadRef(
+      EnvironmentId.make("environment-1"),
+      ThreadId.make("side-chat-1"),
+    );
+    const parentRef = scopeThreadRef(
+      EnvironmentId.make("environment-1"),
+      ThreadId.make("parent-1"),
+    );
+    const onAskAboutSelection = vi.fn(async () => sideChatRef);
+    await using screen = await render(
+      view(
+        [file("shared.ts")],
+        "initial",
+        [],
+        {
+          onAskAboutSelection,
+          askParentPanel: { openToolDiff: () => {}, runShellCommand: () => {} },
+        },
+        parentRef,
+      ),
+      { container },
+    );
+
+    await click("Comment on shared.ts");
+    await typeComment("Why this branch?");
+    const ask = Array.from(container.querySelectorAll("button")).find(
+      (node) => node.textContent === "Ask",
+    );
+    if (!ask) throw new Error("Missing button: Ask");
+    await act(async () => ask.click());
+
+    expect(onAskAboutSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: expect.stringMatching(/^diff-ask-[a-z0-9]+$/),
+        filePath: "shared.ts",
+        rangeLabel: "+1",
+        selection: { start: 1, side: "additions", end: 1, endSide: "additions" },
+        snapshot: expect.objectContaining({
+          kind: expect.stringMatching(/^(git-object|content-hash)$/),
+          fileVersion: 1,
+        }),
+      }),
+      "Why this branch?",
+    );
+    await vi.waitFor(() => {
+      expect(container.querySelector("[data-diff-ask-panel][data-side-chat-pane]")).not.toBeNull();
+    });
+    expect(screen.container).toBe(container);
   });
 });

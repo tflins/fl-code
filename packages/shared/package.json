@@ -291,6 +291,10 @@
       "types": "./src/composerContextReferences.ts",
       "import": "./src/composerContextReferences.ts"
     },
+    "./diffAsk": {
+      "types": "./src/diffAsk.ts",
+      "import": "./src/diffAsk.ts"
+    },
     "./composerContextLegacy": {
       "types": "./src/composerContextLegacy.ts",
       "import": "./src/composerContextLegacy.ts"
