@@ -10,6 +10,7 @@ import {
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2Command,
+  OrchestrationV2ProviderTurnJson,
   OrchestrationV2RpcSchemas,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
@@ -32,11 +33,46 @@ const encodeOrchestrationV2ProviderThreadJson = Schema.encodeSync(
   OrchestrationV2ProviderThreadJson,
 );
 const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(OrchestrationV2ProviderThread);
+const decodeOrchestrationV2ProviderTurnJson = Schema.decodeUnknownSync(
+  OrchestrationV2ProviderTurnJson,
+);
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
   OrchestrationV2ProviderCapabilities,
 );
 
 describe("orchestration V2 contracts", () => {
+  it("keeps provider-turn throughput metadata optional on the wire", () => {
+    const legacy = decodeOrchestrationV2ProviderTurnJson({
+      id: "provider-turn-1",
+      providerThreadId: "provider-thread-1",
+      nodeId: "node-1",
+      runAttemptId: null,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: "completed",
+      startedAt: DateTime.formatIso(now),
+      completedAt: DateTime.formatIso(now),
+    });
+    expect(legacy.throughputEstimate).toBeUndefined();
+
+    expect(
+      decodeOrchestrationV2ProviderTurnJson({
+        ...legacy,
+        startedAt: DateTime.formatIso(now),
+        completedAt: DateTime.formatIso(now),
+        throughputEstimate: {
+          basis: "turn_wall_minus_known_waits",
+          outputTokens: 150,
+          durationMs: 10_000,
+        },
+      }).throughputEstimate,
+    ).toEqual({
+      basis: "turn_wall_minus_known_waits",
+      outputTokens: 150,
+      durationMs: 10_000,
+    });
+  });
+
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),

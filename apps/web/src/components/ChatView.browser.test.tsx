@@ -9,9 +9,19 @@ import {
   pendingThreadMessageJump,
   requestThreadMessageJump,
 } from "@t3tools/client-runtime/state/thread-message-jump";
-import { MessageId, ThreadId } from "@t3tools/contracts";
+import {
+  MessageId,
+  NodeId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import { Activity, StrictMode } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
@@ -29,7 +39,11 @@ import { getRouter } from "~/router";
 import {
   ENVIRONMENT_ID,
   PROJECT_ID,
+  assistantItem,
+  emitThreadEvent,
   installFakeEnvironment,
+  isThreadSubscribed,
+  runningRun,
   threadWithHistory,
   type FakeDriver,
   type FakeThread,
@@ -347,4 +361,137 @@ it("retains each thread's diff selection when returning from another thread or S
     kind: "turn",
     turnId: a.runs[0]!.id,
   });
+});
+
+it("shows fresh streaming throughput in the composer and replaces it with the completed average", async () => {
+  await page.viewport(1440, 900);
+  const thread = threadWithHistory("composer-throughput", 1);
+  using _environment = installFakeEnvironment([thread]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(app.getByTestId("composer-editor")).toBeVisible();
+  await vi.waitFor(() => expect(isThreadSubscribed(thread.id)).toBe(true));
+
+  const at = (milliseconds: number) =>
+    DateTime.add(DateTime.makeUnsafe("2026-03-17T19:12:28.000Z"), { milliseconds });
+  const attemptId = RunAttemptId.make("throughput-attempt");
+  const providerThreadId = ProviderThreadId.make("throughput-provider-thread");
+  const providerTurnId = ProviderTurnId.make("throughput-provider-turn");
+  const nodeId = NodeId.make("throughput-node");
+  const run = {
+    ...runningRun(thread.id, "throughput-run", 2, "throughput-user"),
+    activeAttemptId: attemptId,
+  };
+  const providerTurn = {
+    id: providerTurnId,
+    providerThreadId,
+    nodeId,
+    runAttemptId: attemptId,
+    nativeTurnRef: null,
+    ordinal: 1,
+    status: "running" as const,
+    startedAt: at(0),
+    completedAt: null,
+  };
+  await act(async () => {
+    await emitThreadEvent(thread.id, { type: "run.created", payload: run });
+    await emitThreadEvent(thread.id, {
+      type: "provider-thread.updated",
+      payload: {
+        id: providerThreadId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        providerSessionId: null,
+        appThreadId: thread.id,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "active",
+        firstRunOrdinal: 2,
+        lastRunOrdinal: 2,
+        handoffIds: [],
+        forkedFrom: null,
+        pendingBackgroundTasks: [],
+        contextUsage: null,
+        nativeMetadata: null,
+        goal: null,
+        createdAt: at(0),
+        updatedAt: at(0),
+      },
+    });
+    await emitThreadEvent(thread.id, {
+      type: "run-attempt.created",
+      payload: {
+        id: attemptId,
+        runId: run.id,
+        attemptOrdinal: 1,
+        rootNodeId: nodeId,
+        providerInstanceId: run.providerInstanceId,
+        providerThreadId,
+        providerTurnId,
+        reason: "initial",
+        status: "running",
+        startedAt: at(0),
+        completedAt: null,
+      },
+    });
+    await emitThreadEvent(thread.id, { type: "provider-turn.updated", payload: providerTurn });
+  });
+  const item = {
+    ...assistantItem(thread.id, run.id, "throughput-answer", 3, ""),
+    providerThreadId,
+    providerTurnId,
+    status: "running" as const,
+    streaming: true,
+    completedAt: null,
+  };
+  await act(async () => {
+    for (const [milliseconds, text] of [
+      [0, "Streaming"],
+      [400, "Streaming an answer"],
+      [800, "Streaming an answer with more text"],
+    ] as const) {
+      await emitThreadEvent(thread.id, {
+        type: "turn-item.updated",
+        occurredAt: at(milliseconds),
+        payload: { ...item, text, updatedAt: at(milliseconds) },
+      });
+    }
+  });
+  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).toBeVisible();
+  await act(async () => {
+    await emitThreadEvent(thread.id, {
+      type: "provider-turn.updated",
+      occurredAt: at(1_000),
+      payload: {
+        ...providerTurn,
+        status: "completed",
+        completedAt: at(1_000),
+        throughputEstimate: {
+          basis: "turn_wall_minus_known_waits",
+          outputTokens: 120,
+          durationMs: 1_000,
+        },
+        turnTokenUsage: {
+          usageScope: "main_agent",
+          inputTokens: 50,
+          outputTokens: 120,
+          usageStatus: "complete",
+          hasSubagents: false,
+        },
+      },
+    });
+  });
+  await expect.element(app.getByText("Avg ≈ 120 tok/s", { exact: true })).toBeVisible();
+  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).not.toBeInTheDocument();
 });

@@ -14,6 +14,7 @@ import {
 } from "./ChatView.logic";
 import { usePullRequestDraftThread } from "./chat/usePullRequestDraftThread";
 import { usePullRequestLinking } from "../hooks/usePullRequestLinking";
+import { getDocumentActivity, subscribeDocumentActivity } from "../lib/documentActivity";
 import { useComposerSelection } from "./chat/useComposerSelection";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
 import { useAttachmentPreviewHandoff } from "./chat/useAttachmentPreviewHandoff";
@@ -269,6 +270,7 @@ import {
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
   useQuietThreadVisibleTurnItems,
+  useThreadLiveGenerationSpeed,
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
@@ -339,6 +341,7 @@ import {
   latestProviderTurnTokenUsage,
   shouldOfferResumeCompaction,
 } from "@t3tools/client-runtime/state/context-window";
+import { deriveGenerationSpeed } from "@t3tools/client-runtime/state/generation-speed";
 import {
   MOBILE_COMPOSER_VIEW_TRANSITION_NAME,
   MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
@@ -545,6 +548,12 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection,
     activeProviderThread,
   );
+  const liveGenerationSpeed = useThreadLiveGenerationSpeed(routeThreadDetailRef);
+  const documentActivity = useSyncExternalStore(subscribeDocumentActivity, getDocumentActivity);
+  const generationSpeed = documentActivity.visible
+    ? ((serverProjection === null ? null : deriveGenerationSpeed(serverProjection)) ??
+      liveGenerationSpeed)
+    : null;
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
@@ -3676,6 +3685,7 @@ export default function ChatView(props: ChatViewProps) {
                             ) : null}
                             {!composerMounted ? null : (
                               <ChatComposer
+                                generationSpeed={generationSpeed}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={multipleModelSelections}

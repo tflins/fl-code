@@ -14,6 +14,15 @@ import {
   completeCodexTurnTokenUsage,
   type CodexTurnTokenUsageState,
 } from "../../provider/CodexTurnTokenUsage.ts";
+import {
+  beginCodexThroughputModelOutput,
+  beginCodexThroughputWait,
+  completeCodexThroughputEstimate,
+  endCodexThroughputModelOutput,
+  endCodexThroughputWait,
+  makeCodexTurnThroughputTracker,
+  type CodexTurnThroughputTracker,
+} from "./CodexTurnThroughput.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
 import type { CodexEffectiveRuntime } from "../../provider/CodexManagedRuntime.ts";
 import { classifyCodexManagedError } from "../../provider/CodexManagedErrors.ts";
@@ -1200,6 +1209,7 @@ interface ActiveCodexTurnContext {
   capacityRetryAttempt?: number;
   capacityRetryPending?: Deferred.Deferred<ActiveCodexTurnContext | undefined>;
   closedCommandItemIds?: ReadonlySet<string>;
+  readonly throughput: CodexTurnThroughputTracker;
   latestProviderFailure?: {
     readonly nativeMessage: string;
     readonly nativeCode: string | null;
@@ -1277,6 +1287,26 @@ function isPersistentCodexDynamicTool(item: CodexDynamicToolItem): boolean {
     return false;
   }
   return Reflect.get(input, "persistent") === true;
+}
+
+function isCodexThroughputWaitItem(type: string): boolean {
+  switch (type) {
+    case "commandExecution":
+    case "fileChange":
+    case "mcpToolCall":
+    case "dynamicToolCall":
+    case "collabAgentToolCall":
+    case "webSearch":
+    case "imageGeneration":
+    case "sleep":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function isCodexThroughputModelOutputItem(type: string): boolean {
+  return type === "agentMessage" || type === "reasoning" || type === "plan";
 }
 
 type CodexRootTerminalEvent = Extract<
@@ -2222,6 +2252,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
             runningCompactionItemIds: new Set(),
+            throughput: makeCodexTurnThroughputTracker(),
           };
           const nativeThreadId = input.turnInput.providerThread.nativeThreadRef?.nativeId;
           const continuation =
@@ -2312,6 +2343,33 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const context = yield* awaitActiveTurn(nativeTurnId);
             return context === undefined ? undefined : ({ context, settled: false } as const);
           });
+
+        const awaitMeasuredRuntimeWait = Effect.fn("CodexAdapterV2.measureRuntimeWait")(function* <
+          A,
+        >(
+          context: ActiveCodexTurnContext,
+          requestId: string,
+          startedAt: DateTime.Utc,
+          response: Effect.Effect<A>,
+        ) {
+          const waitId = `request:${requestId}`;
+          beginCodexThroughputWait(context.throughput, waitId, DateTime.toEpochMillis(startedAt));
+          return yield* response.pipe(
+            Effect.ensuring(
+              DateTime.now.pipe(
+                Effect.flatMap((completedAt) =>
+                  Effect.sync(() => {
+                    endCodexThroughputWait(
+                      context.throughput,
+                      waitId,
+                      DateTime.toEpochMillis(completedAt),
+                    );
+                  }),
+                ),
+              ),
+            ),
+          );
+        });
 
         const trackRunningCommandItem = (nativeTurnId: string, item: TrackedRunningCommandItem) =>
           Ref.update(runningCommandItemsByTurn, (current) => {
@@ -2829,6 +2887,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               fileChangeKindsByItem: new Map(),
               messagePhases: new Map(),
               runningCompactionItemIds: new Set(),
+              throughput: makeCodexTurnThroughputTracker(),
             };
             beginTurnTokenUsage(activeContext);
             endSessionApprovalsOnModeChange(activeContext);
@@ -4741,10 +4800,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ),
         );
         yield* client.handleServerNotification("model/rerouted", (payload) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             reroutedTurnModels.set(payload.turnId, payload.toModel);
             reroutedThreads.add(payload.threadId);
-          }).pipe(Effect.andThen(updateSubagentSelection(payload.threadId, payload.toModel))),
+            const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
+            if (context !== undefined) context.throughput.contaminated = true;
+            yield* updateSubagentSelection(payload.threadId, payload.toModel);
+          }),
         );
 
         yield* client.handleServerNotification("hook/completed", (payload) =>
@@ -4888,6 +4950,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               };
               return;
             }
+            context.throughput.contaminated = true;
             const updatedAt = yield* DateTime.now;
             const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const progress = parseCodexRetryProgress(payload.error.message);
@@ -5024,6 +5087,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
+            }
+
+            if (isCodexThroughputModelOutputItem(payload.item.type)) {
+              beginCodexThroughputModelOutput(context.throughput, payload.item.id);
+            }
+            if (isCodexThroughputWaitItem(payload.item.type)) {
+              beginCodexThroughputWait(
+                context.throughput,
+                `tool:${payload.item.id}`,
+                payload.startedAtMs,
+              );
             }
 
             if (payload.item.type === "contextCompaction") {
@@ -5192,6 +5266,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const { context, settled } = resolved;
+
+            if (isCodexThroughputModelOutputItem(payload.item.type)) {
+              endCodexThroughputModelOutput(context.throughput, payload.item.id);
+            }
+            if (isCodexThroughputWaitItem(payload.item.type)) {
+              endCodexThroughputWait(
+                context.throughput,
+                `tool:${payload.item.id}`,
+                payload.completedAtMs,
+              );
+            }
 
             if (payload.item.type === "reasoning") {
               yield* completeReasoning(payload.turnId, payload.item);
@@ -5564,7 +5649,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5636,7 +5726,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5699,7 +5794,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5781,7 +5881,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5845,7 +5950,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5913,7 +6023,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(decision).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(decision),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -5973,7 +6088,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimeRequest: artifacts.request,
             });
 
-            const resolved = yield* Deferred.await(answers).pipe(
+            const resolved = yield* awaitMeasuredRuntimeWait(
+              context,
+              String(artifacts.request.id),
+              artifacts.request.createdAt,
+              Deferred.await(answers),
+            ).pipe(
               Effect.ensuring(
                 Ref.update(pendingRuntimeRequests, (current) => {
                   const updated = new Map(current);
@@ -6349,6 +6469,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly completedAt: DateTime.Utc;
           readonly failureMessage?: string;
           readonly failureErrorInfo?: CodexErrorInfo;
+          readonly nativeDurationMs?: number | null;
           readonly continueRun?: boolean;
           readonly stalledRetry?: {
             readonly state: ActiveCodexProviderRetry;
@@ -6447,6 +6568,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeThreadId != null &&
                 (goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
                   (activation !== undefined && !activation.stopped));
+              const turnTokenUsage = completeCodexTurnTokenUsage(
+                usageStateForThread(
+                  input.context.providerThread.nativeThreadRef?.nativeId ??
+                    String(input.context.providerThread.id),
+                ),
+                input.nativeTurnId,
+                input.status === "completed",
+                reportedTurnModel(
+                  input.context.providerThread.nativeThreadRef?.nativeId ?? "",
+                  input.nativeTurnId,
+                ),
+              );
+              const throughputEstimate =
+                input.status === "completed" &&
+                input.context.subagent === null &&
+                input.nativeDurationMs != null &&
+                turnTokenUsage.usageStatus === "complete" &&
+                !turnTokenUsage.hasSubagents &&
+                (turnTokenUsage.models === undefined || turnTokenUsage.models.length === 1) &&
+                providerRetry === undefined &&
+                (continuedRuns.get(input.context.providerTurnId)?.length ?? 0) <= 1
+                  ? completeCodexThroughputEstimate(input.context.throughput, {
+                      outputTokens: turnTokenUsage.outputTokens,
+                      turnDurationMs: input.nativeDurationMs,
+                    })
+                  : undefined;
               const completedTurn: OrchestrationV2ProviderTurn = {
                 id: input.context.providerTurnId,
                 providerThreadId: input.context.providerThread.id,
@@ -6462,18 +6609,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: input.status,
                 startedAt: input.context.startedAt,
                 completedAt: input.completedAt,
-                turnTokenUsage: completeCodexTurnTokenUsage(
-                  usageStateForThread(
-                    input.context.providerThread.nativeThreadRef?.nativeId ??
-                      String(input.context.providerThread.id),
-                  ),
-                  input.nativeTurnId,
-                  input.status === "completed",
-                  reportedTurnModel(
-                    input.context.providerThread.nativeThreadRef?.nativeId ?? "",
-                    input.nativeTurnId,
-                  ),
-                ),
+                turnTokenUsage,
+                ...(throughputEstimate === undefined ? {} : { throughputEstimate }),
               };
               if (!holdsForGoal) {
                 yield* emitProviderEvent({
@@ -6895,6 +7032,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               nativeTurnId: payload.turn.id,
               status,
               completedAt: codexTimestamp(payload.turn.completedAt),
+              ...(payload.turn.durationMs === undefined
+                ? {}
+                : { nativeDurationMs: payload.turn.durationMs }),
               ...(payload.turn.error?.message === undefined
                 ? {}
                 : {
@@ -6937,6 +7077,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             fileChangeKindsByItem: new Map(),
             messagePhases: new Map(),
             runningCompactionItemIds: new Set(),
+            throughput: makeCodexTurnThroughputTracker(),
           };
           const providerTurn = {
             id: context.providerTurnId,

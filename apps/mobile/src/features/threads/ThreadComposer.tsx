@@ -92,6 +92,7 @@ import type { RemoteClientConnectionState } from "../../lib/connection";
 import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import { Menu } from "../../components/ui/Menu";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
+import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
   resolveComposerSendPresentation,
@@ -204,6 +205,7 @@ function useCompactComposerEditor(text: ScaledTextRole, value: string) {
 }
 
 export interface ThreadComposerProps {
+  readonly generationSpeed?: GenerationSpeedPresentation | null;
   readonly isDraft?: boolean;
   readonly canOperateThread: boolean;
   readonly placeholder: string;
@@ -1092,6 +1094,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   compactEditor.isExpanded ? { flex: 1, justifyContent: "flex-end" } : undefined
                 }
               >
+                {props.generationSpeed ? (
+                  <Text
+                    accessibilityLabel={props.generationSpeed.details}
+                    className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
+                    numberOfLines={1}
+                  >
+                    {props.generationSpeed.label}
+                  </Text>
+                ) : null}
                 {modelControl}
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}

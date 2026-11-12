@@ -594,6 +594,13 @@ export function createEnvironmentThreadDetailAtoms<E>(
     ),
   );
 
+  const liveGenerationSpeedAtomFamily = Atom.family((key: string) =>
+    Atom.make((get) => get(threadStateValueAtomFamily(key)).liveGenerationSpeed).pipe(
+      Atom.setIdleTTL(0),
+      Atom.withLabel(`environment-thread-live-generation-speed:${key}`),
+    ),
+  );
+
   const workspaceMutationIdAtomFamily = Atom.family((key: string) =>
     Atom.make((get) =>
       deriveWorkspaceMutationId(
@@ -630,5 +637,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
     sequenceAtom: (ref: ScopedThreadRef) => sequenceAtomFamily(threadKey(ref)),
     errorAtom: (ref: ScopedThreadRef) => errorAtomFamily(threadKey(ref)),
     historyAtom: (ref: ScopedThreadRef) => historyAtomFamily(threadKey(ref)),
+    liveGenerationSpeedAtom: (ref: ScopedThreadRef) =>
+      liveGenerationSpeedAtomFamily(threadKey(ref)),
   };
 }

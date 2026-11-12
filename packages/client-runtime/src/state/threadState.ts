@@ -1,6 +1,7 @@
 import type { OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
+import type { GenerationSpeedPresentation } from "./generationSpeed.ts";
 import { EMPTY_THREAD_HISTORY_META, type ThreadHistoryMeta } from "./threadHistoryMerge.ts";
 
 export type EnvironmentThreadStatus = "empty" | "cached" | "synchronizing" | "live" | "deleted";
@@ -16,6 +17,8 @@ export interface EnvironmentThreadState {
   readonly history: ThreadHistoryMeta;
   /** The last server sequence `data` reflects, so readers can tell a write has landed without searching paged-out history. */
   readonly sequence: number;
+  /** Client-only estimate from streamed assistant text; never persisted or sent to the server. */
+  readonly liveGenerationSpeed: GenerationSpeedPresentation | null;
 }
 
 export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {
@@ -24,6 +27,7 @@ export const EMPTY_ENVIRONMENT_THREAD_STATE: EnvironmentThreadState = {
   error: Option.none(),
   history: EMPTY_THREAD_HISTORY_META,
   sequence: 0,
+  liveGenerationSpeed: null,
 };
 
 /**

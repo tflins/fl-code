@@ -173,6 +173,53 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.providerTurns[0]?.tokenUsage).toEqual(running.tokenUsage);
   });
 
+  it("clears a throughput estimate when the authoritative update omits it", () => {
+    const providerTurnId = ProviderTurnId.make("provider-turn-throughput");
+    const running = {
+      id: providerTurnId,
+      providerThreadId: ProviderThreadId.make("provider-thread-throughput"),
+      nodeId: NodeId.make("provider-node-throughput"),
+      runAttemptId: null,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: "running" as const,
+      startedAt: now,
+      completedAt: null,
+    };
+    const throughputEstimate = {
+      basis: "turn_wall_minus_known_waits" as const,
+      outputTokens: 150,
+      durationMs: 10_000,
+    };
+    const completed = {
+      ...running,
+      status: "completed" as const,
+      completedAt: now,
+      throughputEstimate,
+    };
+    const first = applyOrchestrationV2ProjectionEvent(
+      { ...emptyProjection, providerTurns: [running] },
+      {
+        id: "event-provider-turn-throughput",
+        type: "provider-turn.updated",
+        threadId,
+        driver: "codex",
+        occurredAt: now,
+        payload: completed,
+      } as OrchestrationV2DomainEvent,
+    );
+    const next = applyOrchestrationV2ProjectionEvent(first!, {
+      id: "event-provider-turn-throughput-repeat",
+      type: "provider-turn.updated",
+      threadId,
+      driver: "codex",
+      occurredAt: now,
+      payload: { ...completed, throughputEstimate: undefined },
+    } as OrchestrationV2DomainEvent);
+
+    expect(next?.providerTurns[0]?.throughputEstimate).toBeUndefined();
+  });
+
   it("applies thread lifecycle payloads instead of leaving stale metadata", () => {
     const archivedAt = DateTime.makeUnsafe("2026-06-20T01:00:00.000Z");
     const event = {

@@ -231,6 +231,10 @@
       "types": "./src/state/presentation.ts",
       "default": "./src/state/presentation.ts"
     },
+    "./state/generation-speed": {
+      "types": "./src/state/generationSpeed.ts",
+      "default": "./src/state/generationSpeed.ts"
+    },
     "./state/device": {
       "types": "./src/state/device.ts",
       "default": "./src/state/device.ts"
