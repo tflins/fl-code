@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 
 export interface GenerationSpeedPresentation {
+  readonly kind: "live" | "average";
   readonly label: string;
   readonly details: string;
   readonly outputTokens: number;
@@ -63,14 +64,48 @@ export function presentCompletedTurn(
   const durationSeconds = (estimate.durationMs / 1000).toFixed(1);
   const outputTokens = estimate.outputTokens.toLocaleString("en-US");
   return {
-    label: `≈ ${rate} tok/s`,
+    kind: "average",
+    label: `Avg ≈ ${rate} tok/s`,
     details:
-      `Estimated output throughput: ${rate} tokens per second. ` +
+      `Average estimated output throughput: ${rate} tokens per second. ` +
       `${outputTokens} output tokens over ${durationSeconds} seconds of effective turn time. ` +
       "This excludes confirmed tool, approval, and input waits, while network, prefill, and scheduling remain included. " +
       "Output tokens include reasoning and tool-call arguments when the provider reports them once. This is not pure decode speed.",
     outputTokens: estimate.outputTokens,
     durationMs: estimate.durationMs,
+    tokensPerSecond,
+  };
+}
+
+export function presentLiveWindow(
+  estimatedTokens: number,
+  durationMs: number,
+): GenerationSpeedPresentation | null {
+  if (
+    !Number.isFinite(estimatedTokens) ||
+    estimatedTokens <= 0 ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return null;
+  }
+  const tokensPerSecond = estimatedTokens / (durationMs / 1000);
+  if (!Number.isFinite(tokensPerSecond) || tokensPerSecond <= 0) return null;
+  const rate = formatRate(tokensPerSecond);
+  const durationSeconds = (durationMs / 1000).toFixed(1);
+  const outputTokens =
+    estimatedTokens < 10
+      ? estimatedTokens.toFixed(1)
+      : Math.round(estimatedTokens).toLocaleString("en-US");
+  return {
+    kind: "live",
+    label: `Live ≈ ${rate} tok/s`,
+    details:
+      `Live estimated output throughput: ${rate} tokens per second over the last ${durationSeconds} seconds. ` +
+      `Counts only visible assistant body text, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +
+      "Tool output, thinking summaries, and hidden reasoning are excluded. The completed-turn average instead uses the provider's reported output tokens and effective turn time.",
+    outputTokens: estimatedTokens,
+    durationMs,
     tokensPerSecond,
   };
 }

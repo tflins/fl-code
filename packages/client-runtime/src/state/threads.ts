@@ -11,6 +11,8 @@ import {
 import { boundedSnapshotProjection } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
 import { pendingBackgroundTurnItems } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Scope from "effect/Scope";
@@ -34,6 +36,10 @@ import { runCachePersistence } from "./cachePersistence.ts";
 import * as ManagedRelay from "../relay/managedRelay.ts";
 import { isAuthorizationFailure, request, subscribeDynamic } from "../rpc/client.ts";
 import { parseThreadKey, threadKey } from "./entities.ts";
+import {
+  LIVE_GENERATION_QUIET_EXPIRY_MS,
+  makeLiveGenerationSpeedTracker,
+} from "./liveGenerationSpeed.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./orchestrationV2Projection.ts";
 import { THREAD_SNAPSHOT_IDLE_TTL_MS } from "./threadRetention.ts";
 import { followStreamInEnvironment } from "./runtime.ts";
@@ -185,6 +191,7 @@ function cachedThreadState(value: EnvironmentThreadState): EnvironmentThreadStat
         : statusWithoutLiveData(value.data),
     error: Option.none(),
     history: { ...value.history, loading: false, error: null },
+    liveGenerationSpeed: null,
   };
 }
 
@@ -265,6 +272,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           onSome: historyMetaFromCachedSnapshot,
         }),
         sequence: initialSequence,
+        liveGenerationSpeed: null,
       };
   const state = yield* SubscriptionRef.make(initialState);
   const canLoadHistory = Option.isSome(httpClient) && Option.isSome(historyController);
@@ -279,6 +287,49 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   if (resumeCache?.owner === owner) resumeCache.snapshot = committed;
   const awaitingCompletion = yield* Ref.make(false);
   const applyLock = yield* Semaphore.make(1);
+  const liveTracker = makeLiveGenerationSpeedTracker();
+  const liveExpirySignals = yield* Queue.sliding<{
+    readonly revision: number;
+    readonly atMs: number;
+  }>(1);
+  // Expiry only clears the value it was scheduled for; a newer batch bumps this.
+  let liveRevision = 0;
+  const resetLiveGeneration = Effect.gen(function* () {
+    liveTracker.reset();
+    liveRevision += 1;
+    yield* SubscriptionRef.update(state, (current) =>
+      current.liveGenerationSpeed === null ? current : { ...current, liveGenerationSpeed: null },
+    );
+  });
+  yield* Effect.gen(function* () {
+    while (true) {
+      let signal = yield* Queue.take(liveExpirySignals);
+      while (signal.revision === liveRevision) {
+        const nowMs = yield* Clock.currentTimeMillis;
+        const remainingMs = signal.atMs + LIVE_GENERATION_QUIET_EXPIRY_MS - nowMs;
+        if (remainingMs > 0) yield* Effect.sleep(Duration.millis(remainingMs));
+        const pending = yield* Queue.takeAll(liveExpirySignals);
+        const newer = pending.at(-1);
+        if (newer !== undefined) {
+          const newerRemainingMs =
+            newer.atMs + LIVE_GENERATION_QUIET_EXPIRY_MS - (yield* Clock.currentTimeMillis);
+          if (newerRemainingMs > 0) {
+            signal = newer;
+            continue;
+          }
+          signal = newer;
+        }
+        if (signal.revision !== liveRevision) break;
+        liveTracker.expire();
+        yield* SubscriptionRef.update(state, (current) =>
+          current.liveGenerationSpeed === null
+            ? current
+            : { ...current, liveGenerationSpeed: null },
+        );
+        break;
+      }
+    }
+  }).pipe(Effect.forkScoped);
   // Save only completed data/cursor updates. A canceled scope must not cache
   // a cursor whose event has not reached the data yet.
   const announceRequests = makeThreadRequestsResolvedAnnouncer(environmentId, threadId);
@@ -400,20 +451,24 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         },
   );
   const setDisconnected = Effect.gen(function* () {
+    yield* resetLiveGeneration;
     yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
+      liveGenerationSpeed: null,
     }));
   });
   const setStreamError = (message: string) =>
     Ref.set(awaitingCompletion, false).pipe(
+      Effect.andThen(resetLiveGeneration),
       Effect.andThen(
         SubscriptionRef.update(state, (current) => ({
           ...current,
           status:
             current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
           error: Option.some(message),
+          liveGenerationSpeed: null,
         })),
       ),
     );
@@ -425,6 +480,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       readonly history?: ThreadHistoryMeta;
     },
   ) {
+    yield* resetLiveGeneration;
     const waiting = yield* Ref.get(awaitingCompletion);
     const sequence = yield* SubscriptionRef.get(lastSequence);
     // Atomic with concurrent history meta updates: never get-then-set the whole
@@ -448,6 +504,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         error: previous.error,
         history,
         sequence,
+        liveGenerationSpeed: null,
       };
     });
     // Active projections can update many times per second and retain large tool
@@ -473,6 +530,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }));
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
+    yield* resetLiveGeneration;
     yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
@@ -480,6 +538,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       error: Option.none(),
       history: EMPTY_THREAD_HISTORY_META,
       sequence: yield* SubscriptionRef.get(lastSequence),
+      liveGenerationSpeed: null,
     });
     yield* remember;
     if (resumeCache !== undefined && resumeCache.owner !== owner) return;
@@ -527,6 +586,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     if (fresh.length === 0) return;
 
     const waiting = yield* Ref.get(awaitingCompletion);
+    const liveSignalAtMs = yield* Clock.currentTimeMillis;
+    let live: ReturnType<typeof liveTracker.observeBatch> | undefined;
+
     // Apply against the latest projection/history in one update so a concurrent
     // loadEarlier merge (or history-meta patch) cannot be clobbered by a stale
     // get-then-set rebuild.
@@ -599,8 +661,30 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           if (applied._tag !== "noop") result = applied;
           if (applied._tag === "delete") break;
         }
+        if (
+          result._tag !== "delete" &&
+          !waiting &&
+          current.status === "live" &&
+          Option.isSome(current.data)
+        ) {
+          live = liveTracker.observeBatch(
+            fresh.map((item) => item.event),
+            current.data.value,
+          );
+        }
+        const withLive =
+          live === undefined || current.liveGenerationSpeed === live.presentation
+            ? current
+            : { ...current, liveGenerationSpeed: live.presentation };
+        if (live?.sawAssistantText === true) {
+          liveRevision += 1;
+          Queue.offerUnsafe(liveExpirySignals, {
+            revision: liveRevision,
+            atMs: liveSignalAtMs,
+          });
+        }
         // A batch that changed nothing keeps its state object, so readers do not re-render.
-        return [result, result._tag === "noop" ? current : { ...current, sequence }];
+        return [result, result._tag === "noop" ? withLive : { ...withLive, sequence }];
       },
     );
 
@@ -982,6 +1066,8 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           return yield* Effect.never;
         }
 
+        // Foreground wakeups resubscribe; catch-up batches after that are not live output.
+        yield* resetLiveGeneration;
         const config = yield* Effect.option(session.initialConfig);
         yield* Ref.set(awaitingCompletion, true);
         yield* markSynchronizing;

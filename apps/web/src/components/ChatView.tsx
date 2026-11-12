@@ -14,6 +14,7 @@ import {
 } from "./ChatView.logic";
 import { usePullRequestDraftThread } from "./chat/usePullRequestDraftThread";
 import { usePullRequestLinking } from "../hooks/usePullRequestLinking";
+import { getDocumentActivity, subscribeDocumentActivity } from "../lib/documentActivity";
 import { useComposerSelection } from "./chat/useComposerSelection";
 import { useProjectCloneBanner } from "./chat/useProjectCloneBanner";
 import { useAttachmentPreviewHandoff } from "./chat/useAttachmentPreviewHandoff";
@@ -269,6 +270,7 @@ import {
   useThreadUpdatedAt,
   useThreadLastVisitedAt,
   useQuietThreadVisibleTurnItems,
+  useThreadLiveGenerationSpeed,
   useThreadStatus,
   useThreadHistory,
   useQuietThreadShell,
@@ -545,8 +547,12 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection,
     activeProviderThread,
   );
-  const generationSpeed =
-    serverProjection === null ? null : deriveGenerationSpeed(serverProjection);
+  const liveGenerationSpeed = useThreadLiveGenerationSpeed(routeThreadDetailRef);
+  const documentActivity = useSyncExternalStore(subscribeDocumentActivity, getDocumentActivity);
+  const generationSpeed = documentActivity.visible
+    ? ((serverProjection === null ? null : deriveGenerationSpeed(serverProjection)) ??
+      liveGenerationSpeed)
+    : null;
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {

@@ -51,6 +51,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useAppForeground } from "../../lib/appState";
 import { useThreadShell } from "../../state/entities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
@@ -372,8 +373,11 @@ function ThreadRouteContent(
   );
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const generationSpeed =
-    selectedThreadDetail === null ? null : deriveGenerationSpeed(selectedThreadDetail);
+  const appForeground = useAppForeground();
+  const generationSpeed = appForeground
+    ? ((selectedThreadDetail === null ? null : deriveGenerationSpeed(selectedThreadDetail)) ??
+      selectedThreadDetailState.liveGenerationSpeed)
+    : null;
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const startSideChat = useStartSideChat();
   const composer = useThreadComposerState({ startSideChat });

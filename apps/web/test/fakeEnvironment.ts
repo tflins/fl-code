@@ -524,7 +524,7 @@ export function isThreadSubscribed(threadId: ThreadId): boolean {
 /** Delivers one domain event, such as a run or turn-item update, to the thread's subscription. */
 export async function emitThreadEvent(
   threadId: ThreadId,
-  event: Pick<ThreadEvent, "type" | "payload">,
+  event: Pick<ThreadEvent, "type" | "payload"> & Partial<Pick<ThreadEvent, "occurredAt">>,
 ): Promise<void> {
   const queue = threadSubscribers.get(threadId);
   if (!queue) throw new Error(`No live subscription for ${threadId}`);
@@ -533,7 +533,12 @@ export async function emitThreadEvent(
     Queue.offer(queue, {
       kind: "event",
       sequence,
-      event: { ...event, id: EventId.make(`event-${sequence}`), threadId, occurredAt: AT },
+      event: {
+        ...event,
+        id: EventId.make(`event-${sequence}`),
+        threadId,
+        occurredAt: event.occurredAt ?? AT,
+      },
     } as OrchestrationV2ThreadStreamItem),
   );
 }

@@ -1,7 +1,11 @@
 import { RunAttemptId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { deriveGenerationSpeed, presentCompletedTurn } from "./generationSpeed.ts";
+import {
+  deriveGenerationSpeed,
+  presentCompletedTurn,
+  presentLiveWindow,
+} from "./generationSpeed.ts";
 
 const attempt = RunAttemptId.make("attempt-1");
 
@@ -42,7 +46,8 @@ describe("generation speed presentation", () => {
     );
 
     expect(presentation?.tokensPerSecond).toBe(10);
-    expect(presentation?.label).toBe("≈ 10 tok/s");
+    expect(presentation?.label).toBe("Avg ≈ 10 tok/s");
+    expect(presentation?.kind).toBe("average");
     expect(presentation?.outputTokens).toBe(100);
     expect(presentation?.details).toContain("100 output tokens over 10.0 seconds");
     expect(presentation?.details).toContain("not pure decode speed");
@@ -76,7 +81,7 @@ describe("generation speed presentation", () => {
       providerTurns: [completedTurn({})],
     });
 
-    expect(presentation?.label).toBe("≈ 14 tok/s");
+    expect(presentation?.label).toBe("Avg ≈ 14 tok/s");
   });
 
   it("hides scopes that the server cannot attribute to one main-agent model", () => {
@@ -105,6 +110,21 @@ describe("generation speed presentation", () => {
       completedTurn({ outputTokens: 1, estimateDurationMs: 60_000 }),
     );
 
-    expect(presentation?.label).toBe("≈ <0.1 tok/s");
+    expect(presentation?.label).toBe("Avg ≈ <0.1 tok/s");
+  });
+
+  it("distinguishes the live visible-text estimate from the completed provider average", () => {
+    const presentation = presentLiveWindow(84, 2_000);
+
+    expect(presentation).toMatchObject({
+      kind: "live",
+      label: "Live ≈ 42 tok/s",
+      outputTokens: 84,
+      durationMs: 2_000,
+    });
+    expect(presentation?.details).toContain("visible assistant body text");
+    expect(presentation?.details).toContain("multilingual character heuristic");
+    expect(presentation?.details).toContain("hidden reasoning are excluded");
+    expect(presentation?.details).toContain("completed-turn average instead uses");
   });
 });

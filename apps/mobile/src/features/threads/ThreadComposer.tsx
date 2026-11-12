@@ -1097,7 +1097,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 {props.generationSpeed ? (
                   <Text
                     accessibilityLabel={props.generationSpeed.details}
-                    className="me-1 max-w-20 shrink text-2xs text-foreground-muted tabular-nums"
+                    className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
                     numberOfLines={1}
                   >
                     {props.generationSpeed.label}

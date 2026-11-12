@@ -128,12 +128,17 @@ Leaving reasoning level or service tier unset uses the provider's own configurat
 
 ## Output throughput
 
-After a Codex turn completes, the composer shows an estimated output throughput such as
-`≈ 13 tok/s`. It divides the turn's output tokens, including reasoning and tool-call arguments
-once, by the full turn time minus confirmed tool, approval, and input waits. Network, prefill,
-and scheduling time remain included, so this is an estimate rather than pure decode speed.
-T3 Code hides the reading when the turn is incomplete or the time and token scopes cannot be
-matched reliably.
+While a Codex reply streams, the composer can show a live estimate such as `Live ≈ 42 tok/s`.
+It counts only visible assistant text over a short rolling window using a multilingual
+character-based estimate, so tool output and hidden reasoning are not included. The live value
+appears once enough fresh output has arrived and clears when no new text arrives for a short
+time. Short replies may finish before it appears.
+
+After the turn completes, the composer shows an average such as `Avg ≈ 13 tok/s`. It divides the
+turn's provider-reported output tokens, including reasoning and tool-call arguments once, by the
+full turn time minus confirmed tool, approval, and input waits. Network, prefill, and scheduling
+time remain included, so neither reading is pure decode speed. T3 Code hides the average when the
+turn is incomplete or the time and token scopes cannot be matched reliably.
 
 ## Quote an assistant response
 

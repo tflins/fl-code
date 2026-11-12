@@ -27,6 +27,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
+import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
 import { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
@@ -77,6 +78,9 @@ const EMPTY_UPDATED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
 );
 const EMPTY_THREAD_HISTORY_ATOM = Atom.make<ThreadHistoryMeta>(EMPTY_THREAD_HISTORY_META).pipe(
   Atom.withLabel("web-thread-history:empty"),
+);
+const EMPTY_LIVE_GENERATION_SPEED_ATOM = Atom.make<GenerationSpeedPresentation | null>(null).pipe(
+  Atom.withLabel("web-thread-live-generation-speed:empty"),
 );
 
 export function useThreadRefs(enabled = true): ReadonlyArray<ScopedThreadRef> {
@@ -184,6 +188,17 @@ export function useQuietThreadProjection(
 ): EnvironmentThreadStructure | null {
   return useAtomValue(
     ref === null ? EMPTY_THREAD_PROJECTION_ATOM : environmentThreadDetails.quietThreadAtom(ref),
+  );
+}
+
+/** The client-only live throughput estimate for the thread's streaming reply. */
+export function useThreadLiveGenerationSpeed(
+  ref: ScopedThreadRef | null,
+): GenerationSpeedPresentation | null {
+  return useAtomValue(
+    ref === null
+      ? EMPTY_LIVE_GENERATION_SPEED_ATOM
+      : environmentThreadDetails.liveGenerationSpeedAtom(ref),
   );
 }
 

@@ -5,6 +5,12 @@ import {
   MessageId,
   NodeId,
   ORCHESTRATION_V2_WS_METHODS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderTurnId,
+  RunAttemptId,
+  RunId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -322,6 +328,207 @@ const snapshot = (
 });
 
 const synchronized = (): OrchestrationV2ThreadStreamItem => ({ kind: "synchronized" });
+
+const LIVE_BASE = DateTime.makeUnsafe("2026-06-20T03:00:00.000Z");
+const LIVE_RUN_ID = RunId.make("live-run");
+const LIVE_ATTEMPT_ID = RunAttemptId.make("live-attempt");
+const LIVE_PROVIDER_TURN_ID = ProviderTurnId.make("live-provider-turn");
+const liveSequence = (offset: number) => CACHED_SNAPSHOT_SEQUENCE + offset;
+
+const liveAt = (offsetMs: number) => DateTime.add(LIVE_BASE, { milliseconds: offsetMs });
+
+const liveRunEvent = (
+  sequence: number,
+  status: "running" | "completed",
+): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence,
+  event: {
+    id: EventId.make(`event-live-run-${sequence}-${status}`),
+    type: "run.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(sequence),
+    payload: {
+      id: LIVE_RUN_ID,
+      threadId: THREAD_ID,
+      ordinal: 1,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      providerThreadId: null,
+      userMessageId: MessageId.make("live-user-message"),
+      rootNodeId: null,
+      activeAttemptId: LIVE_ATTEMPT_ID,
+      status,
+      requestedAt: liveAt(0),
+      startedAt: liveAt(0),
+      completedAt: status === "completed" ? liveAt(sequence) : null,
+      checkpointId: null,
+      contextHandoffId: null,
+    },
+  },
+});
+
+const liveAttemptEvent = (
+  sequence: number,
+): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence,
+  event: {
+    id: EventId.make(`event-live-attempt-${sequence}`),
+    type: "run-attempt.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(0),
+    payload: {
+      id: LIVE_ATTEMPT_ID,
+      runId: LIVE_RUN_ID,
+      attemptOrdinal: 1,
+      rootNodeId: NodeId.make("live-node"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerThreadId: ProviderThreadId.make("live-provider-thread"),
+      providerTurnId: LIVE_PROVIDER_TURN_ID,
+      reason: "initial",
+      status: "running",
+      startedAt: liveAt(0),
+      completedAt: null,
+    },
+  },
+});
+
+const liveProviderThreadEvent = (
+  sequence: number,
+): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence,
+  event: {
+    id: EventId.make(`event-live-provider-thread-${sequence}`),
+    type: "provider-thread.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(0),
+    payload: {
+      id: ProviderThreadId.make("live-provider-thread"),
+      driver: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      providerSessionId: null,
+      appThreadId: THREAD_ID,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "active",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      pendingBackgroundTasks: [],
+      contextUsage: null,
+      nativeMetadata: null,
+      goal: null,
+      createdAt: liveAt(0),
+      updatedAt: liveAt(0),
+    },
+  },
+});
+
+const liveProviderTurnEvent = (
+  sequence: number,
+  status: "running" | "completed",
+): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence,
+  event: {
+    id: EventId.make(`event-live-provider-turn-${sequence}-${status}`),
+    type: "provider-turn.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(0),
+    payload: {
+      id: LIVE_PROVIDER_TURN_ID,
+      providerThreadId: ProviderThreadId.make("live-provider-thread"),
+      nodeId: NodeId.make("live-node"),
+      runAttemptId: LIVE_ATTEMPT_ID,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status,
+      startedAt: liveAt(0),
+      completedAt: status === "completed" ? liveAt(1_000) : null,
+    },
+  },
+});
+
+const liveStartEvents = (
+  firstSequence: number,
+): ReadonlyArray<Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }>> => [
+  liveRunEvent(firstSequence, "running"),
+  liveAttemptEvent(firstSequence + 1),
+  liveProviderThreadEvent(firstSequence + 2),
+  liveProviderTurnEvent(firstSequence + 3, "running"),
+];
+
+const liveAssistantEvent = (input: {
+  readonly sequence: number;
+  readonly itemId: string;
+  readonly text: string;
+  readonly atMs: number;
+  readonly streaming?: boolean;
+  readonly runId?: RunId;
+  readonly providerTurnId?: ProviderTurnId;
+}): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence: input.sequence,
+  event: {
+    id: EventId.make(`event-live-assistant-${input.sequence}`),
+    type: "turn-item.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(input.atMs),
+    payload: {
+      id: TurnItemId.make(input.itemId),
+      threadId: THREAD_ID,
+      runId: input.runId ?? LIVE_RUN_ID,
+      nodeId: null,
+      providerThreadId: ProviderThreadId.make("live-provider-thread"),
+      providerTurnId: input.providerTurnId ?? LIVE_PROVIDER_TURN_ID,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "running",
+      title: null,
+      startedAt: liveAt(0),
+      completedAt: null,
+      updatedAt: liveAt(input.atMs),
+      type: "assistant_message",
+      messageId: MessageId.make(`live-message-${input.itemId}`),
+      text: input.text,
+      streaming: input.streaming ?? true,
+    },
+  },
+});
+
+const liveAssistantMessageEvent = (
+  sequence: number,
+  text: string,
+  atMs: number,
+): Extract<OrchestrationV2ThreadStreamItem, { readonly kind: "event" }> => ({
+  kind: "event",
+  sequence,
+  event: {
+    id: EventId.make(`event-live-message-${sequence}`),
+    type: "message.updated",
+    threadId: THREAD_ID,
+    occurredAt: liveAt(atMs),
+    payload: {
+      id: MessageId.make("live-message-live-assistant"),
+      threadId: THREAD_ID,
+      runId: LIVE_RUN_ID,
+      nodeId: null,
+      role: "assistant",
+      text,
+      createdBy: "agent",
+      creationSource: "provider",
+      streaming: true,
+      attachments: [],
+      createdAt: liveAt(0),
+      updatedAt: liveAt(atMs),
+    },
+  },
+});
 
 const PENDING_QUESTION = {
   id: RuntimeRequestId.make("question"),
@@ -1531,6 +1738,7 @@ describe("EnvironmentThreads", () => {
               error: Option.none(),
               history: { ...EMPTY_THREAD_HISTORY_META, historyCursor: null, expanded: true },
               sequence: CACHED_SNAPSHOT_SEQUENCE,
+              liveGenerationSpeed: null,
             },
             sequence: CACHED_SNAPSHOT_SEQUENCE,
             persisted: true,
@@ -2350,6 +2558,380 @@ describe("EnvironmentThreads", () => {
         (value) => value.status === "live" && Option.isSome(value.data),
       );
       expect(Option.getOrThrow(live.data).thread.title).toBe("Caught-up title");
+    }),
+  );
+
+  it.effect(
+    "publishes live throughput from assistant turn items across the real event consumer",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ cached: BASE_PROJECTION });
+        yield* Queue.offerAll(harness.inputs, [
+          ...liveStartEvents(liveSequence(1)),
+          liveAssistantEvent({
+            sequence: liveSequence(5),
+            itemId: "live-assistant",
+            text: "a",
+            atMs: 0,
+          }),
+          liveAssistantMessageEvent(liveSequence(6), "a".repeat(40), 300),
+          liveAssistantEvent({
+            sequence: liveSequence(7),
+            itemId: "live-assistant",
+            text: "aa",
+            atMs: 300,
+          }),
+          liveAssistantEvent({
+            sequence: liveSequence(8),
+            itemId: "live-assistant",
+            text: "aaaa",
+            atMs: 800,
+          }),
+        ]);
+
+        const live = yield* awaitThreadState(
+          harness.observed,
+          (value) => value.liveGenerationSpeed !== null,
+        );
+        expect(live.liveGenerationSpeed).toMatchObject({
+          kind: "live",
+          label: "Live ≈ 0.9 tok/s",
+          durationMs: 800,
+        });
+        expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(0.75, 10);
+      }),
+  );
+
+  it.effect("ignores completed snapshots and clears on provider-turn termination", () =>
+    Effect.gen(function* () {
+      const completedSnapshot = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(completedSnapshot.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(
+        completedSnapshot.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
+      yield* Queue.offer(
+        completedSnapshot.inputs,
+        liveAssistantEvent({
+          sequence: liveSequence(8),
+          itemId: "live-assistant",
+          text: "a".repeat(40),
+          atMs: 1_000,
+          streaming: false,
+        }),
+      );
+      yield* awaitThreadState(
+        completedSnapshot.observed,
+        (value) => value.liveGenerationSpeed === null,
+      );
+
+      const providerTerminal = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(providerTerminal.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(
+        providerTerminal.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
+      yield* Queue.offer(
+        providerTerminal.inputs,
+        liveProviderTurnEvent(liveSequence(8), "completed"),
+      );
+      yield* awaitThreadState(
+        providerTerminal.observed,
+        (value) => value.liveGenerationSpeed === null,
+      );
+    }),
+  );
+
+  it.effect("does not let an old turn item replace the current live scope", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(harness.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
+
+      yield* Queue.offer(
+        harness.inputs,
+        liveAssistantEvent({
+          sequence: liveSequence(8),
+          itemId: "old-assistant",
+          text: "a".repeat(40),
+          atMs: 1_000,
+          runId: RunId.make("old-run"),
+          providerTurnId: ProviderTurnId.make("old-provider-turn"),
+        }),
+      );
+      const applied = yield* awaitThreadState(harness.observed, (value) =>
+        Option.exists(value.data, (projection) =>
+          projection.turnItems.some((item) => item.id === "old-assistant"),
+        ),
+      );
+      expect(applied.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
+    }),
+  );
+
+  it.effect("rebaselines live sampling when the app returns to the foreground", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(harness.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
+
+      yield* Queue.offer(harness.wakeups, "application-active");
+      const resumed = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.liveGenerationSpeed === null,
+      );
+      expect(resumed.liveGenerationSpeed).toBeNull();
+    }),
+  );
+
+  it.effect("does not sample events replayed before synchronization", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+      yield* Queue.offerAll(harness.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+
+      const catchingUp = yield* awaitThreadState(harness.observed, (value) =>
+        Option.exists(value.data, (projection) =>
+          projection.turnItems.some((item) => item.type === "assistant_message"),
+        ),
+      );
+      expect(catchingUp.liveGenerationSpeed).toBeNull();
+
+      yield* Queue.offer(harness.inputs, synchronized());
+      const synchronizedState = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(synchronizedState.liveGenerationSpeed).toBeNull();
+    }),
+  );
+
+  it.effect("expires a quiet live reading without inventing output", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(harness.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
+
+      yield* TestClock.adjust("1500 millis");
+
+      const expired = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.liveGenerationSpeed === null,
+      );
+      expect(expired.liveGenerationSpeed).toBeNull();
+    }),
+  );
+
+  it.effect("clears the live reading on completion or a replacement snapshot", () =>
+    Effect.gen(function* () {
+      const completed = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(completed.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed !== null);
+      yield* Queue.offer(completed.inputs, liveRunEvent(liveSequence(8), "completed"));
+      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed === null);
+
+      const snapshotted = yield* makeHarness({ cached: BASE_PROJECTION });
+      yield* Queue.offerAll(snapshotted.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed !== null);
+      yield* Queue.offer(snapshotted.inputs, snapshot(BASE_PROJECTION, 20));
+      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed === null);
+    }),
+  );
+
+  it.effect("clears the live reading when the event stream fails", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
+      yield* Queue.offer(harness.inputs, synchronized());
+      yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      yield* Queue.offerAll(harness.inputs, [
+        ...liveStartEvents(liveSequence(1)),
+        liveAssistantEvent({
+          sequence: liveSequence(5),
+          itemId: "live-assistant",
+          text: "a",
+          atMs: 0,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(6),
+          itemId: "live-assistant",
+          text: "aa",
+          atMs: 300,
+        }),
+        liveAssistantEvent({
+          sequence: liveSequence(7),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 800,
+        }),
+      ]);
+      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
+
+      yield* Queue.offer(harness.inputs, new Error("stream failed"));
+      const failed = yield* awaitThreadState(harness.observed, (value) =>
+        Option.isSome(value.error),
+      );
+      expect(failed.liveGenerationSpeed).toBeNull();
     }),
   );
 
