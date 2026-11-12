@@ -156,8 +156,12 @@ function providersWithLimits(providers: readonly ServerProvider[]): readonly Ser
       provider.enabled &&
       provider.installed &&
       isProviderAvailable(provider) &&
-      provider.usageLimits !== undefined,
+      displayUsageLimits(provider) !== undefined,
   );
+}
+
+function displayUsageLimits(provider: ServerProvider) {
+  return provider.accountUsageLimits ?? provider.usageLimits;
 }
 
 export type LimitPresentations = ReadonlyMap<
@@ -183,12 +187,13 @@ export function collectExternalUsageLinks(presentations: LimitPresentations) {
   >();
   for (const presentation of presentations.values()) {
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const external = provider.usageLimits?.externalUsage;
+      const limits = displayUsageLimits(provider);
+      const external = limits?.externalUsage;
       if (external && provider.auth.status === "authenticated") {
         const account = `${provider.displayName ?? provider.instanceId} on ${presentation.entry.target.label}`;
         links.set(external.url, {
           ...external,
-          message: provider.usageLimits?.unavailable?.message,
+          message: limits?.unavailable?.message,
           accounts: [...new Set([...(links.get(external.url)?.accounts ?? []), account])],
         });
       }
@@ -220,7 +225,7 @@ const nativeReport = (provider: ServerProvider): AccountReport => ({
   driver: provider.driver,
   email: provider.auth.email,
   workspaceId: provider.auth.workspaceId,
-  usageLimits: provider.usageLimits,
+  usageLimits: displayUsageLimits(provider),
 });
 
 // Include every enabled login, even unreadable workspaces.
@@ -347,7 +352,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
   for (const [environmentId, presentation] of presentations) {
     const label = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (!provider.usageLimits || limitsNotice(provider.usageLimits) !== null) continue;
+      const limits = displayUsageLimits(provider);
+      if (!limits || limitsNotice(limits) !== null) continue;
       merge(resolveKey(nativeReport(provider)) ?? `${environmentId}:${provider.instanceId}`, {
         key: `${environmentId}:${provider.instanceId}`,
         driver: provider.driver,
@@ -357,8 +363,10 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,
-        redeem: { environmentId, input: { instanceId: provider.instanceId } },
-        limits: provider.usageLimits,
+        redeem: provider.accountUsageLimits
+          ? null
+          : { environmentId, input: { instanceId: provider.instanceId } },
+        limits,
       });
     }
   }
@@ -405,9 +413,15 @@ export function collectLimitNotices(presentations: LimitPresentations): readonly
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
-      const notice = provider.usageLimits ? limitsNotice(provider.usageLimits) : null;
+      const limits = displayUsageLimits(provider);
+      if (limits?.unavailable?.reason === "unsupported") continue;
       const name = provider.displayName?.trim() || String(provider.driver);
+      if (provider.accountUsageLimits) {
+        notices.add(
+          `${label(environmentLabel, name)}: Signed-in ChatGPT account limits. Usage through custom routes may use a different allowance.`,
+        );
+      }
+      const notice = limits ? limitsNotice(limits) : null;
       if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
     }
     for (const source of presentation.serverConfig?.usageLimitSources ?? []) {

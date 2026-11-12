@@ -140,65 +140,67 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
-  it.effect("invalidates cached usage and queues one refresh behind an in-flight refresh", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const calls = yield* Ref.make(0);
-        const probeStarted = yield* Deferred.make<void>();
-        const releaseProbe = yield* Deferred.make<void>();
-        const cache = yield* Cache.makeWith(
-          () =>
-            Effect.gen(function* () {
-              const count = yield* Ref.updateAndGet(calls, (count) => count + 1);
-              if (count === 2) {
-                yield* Deferred.succeed(probeStarted, undefined);
-                yield* Deferred.await(releaseProbe);
-              }
-              return {
-                ...refreshedSnapshot,
-                usageLimits: {
-                  checkedAt: refreshedSnapshot.checkedAt,
-                  windows: [
-                    {
-                      id: "five_hour",
-                      kind: "session",
-                      label: "Session",
-                      usedPercent: count === 1 ? 20 : 100,
-                    },
-                  ],
-                },
-              } satisfies ServerProvider;
-            }),
-          { capacity: 1, timeToLive: () => "5 minutes" },
-        );
-        const warmed = yield* Cache.get(cache, "claude");
-        const provider = yield* makeManagedServerProvider<TestSettings>({
-          resolveMaintenance: () => Effect.die("usage refresh must not resolve maintenance"),
-          getSettings: Effect.succeed({ enabled: true }),
-          streamSettings: Stream.empty,
-          haveSettingsChanged: () => false,
-          initialSnapshot: () => Effect.succeed(warmed),
-          checkProvider: Cache.get(cache, "claude"),
-          invalidateUsageCache: Cache.invalidateAll(cache),
-          refreshOnInterval: false,
-        });
-        yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
-        assert.strictEqual(yield* Ref.get(calls), 1);
-        const refresh = yield* provider.refreshUsage!.pipe(Effect.forkChild);
-        yield* Deferred.await(probeStarted);
-        const queued = yield* provider.refreshUsage!.pipe(
-          Effect.forkChild({ startImmediately: true }),
-        );
-        yield* provider.refreshUsage!;
-        assert.strictEqual(yield* Ref.get(calls), 2);
-        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 20);
-        yield* Deferred.succeed(releaseProbe, undefined);
-        yield* Fiber.join(refresh);
-        yield* Fiber.join(queued);
-        assert.strictEqual(yield* Ref.get(calls), 3);
-        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 100);
-      }),
-    ).pipe(Effect.provide(layerAlwaysRunTest)),
+  it.effect.each(["usageLimits", "accountUsageLimits"] as const)(
+    "invalidates cached %s and queues one refresh behind an in-flight refresh",
+    (field) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const calls = yield* Ref.make(0);
+          const probeStarted = yield* Deferred.make<void>();
+          const releaseProbe = yield* Deferred.make<void>();
+          const cache = yield* Cache.makeWith(
+            () =>
+              Effect.gen(function* () {
+                const count = yield* Ref.updateAndGet(calls, (count) => count + 1);
+                if (count === 2) {
+                  yield* Deferred.succeed(probeStarted, undefined);
+                  yield* Deferred.await(releaseProbe);
+                }
+                return {
+                  ...refreshedSnapshot,
+                  [field]: {
+                    checkedAt: refreshedSnapshot.checkedAt,
+                    windows: [
+                      {
+                        id: "five_hour",
+                        kind: "session",
+                        label: "Session",
+                        usedPercent: count === 1 ? 20 : 100,
+                      },
+                    ],
+                  },
+                } satisfies ServerProvider;
+              }),
+            { capacity: 1, timeToLive: () => "5 minutes" },
+          );
+          const warmed = yield* Cache.get(cache, "claude");
+          const provider = yield* makeManagedServerProvider<TestSettings>({
+            resolveMaintenance: () => Effect.die("usage refresh must not resolve maintenance"),
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: () => false,
+            initialSnapshot: () => Effect.succeed(warmed),
+            checkProvider: Cache.get(cache, "claude"),
+            invalidateUsageCache: Cache.invalidateAll(cache),
+            refreshOnInterval: false,
+          });
+          yield* provider.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+          assert.strictEqual(yield* Ref.get(calls), 1);
+          const refresh = yield* provider.refreshUsage!.pipe(Effect.forkChild);
+          yield* Deferred.await(probeStarted);
+          const queued = yield* provider.refreshUsage!.pipe(
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* provider.refreshUsage!;
+          assert.strictEqual(yield* Ref.get(calls), 2);
+          assert.strictEqual((yield* provider.getSnapshot)[field]?.windows[0]?.usedPercent, 20);
+          yield* Deferred.succeed(releaseProbe, undefined);
+          yield* Fiber.join(refresh);
+          yield* Fiber.join(queued);
+          assert.strictEqual(yield* Ref.get(calls), 3);
+          assert.strictEqual((yield* provider.getSnapshot)[field]?.windows[0]?.usedPercent, 100);
+        }),
+      ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
   it.effect("keeps the waiting usage refresh's claim when the running one is interrupted", () =>
     Effect.scoped(

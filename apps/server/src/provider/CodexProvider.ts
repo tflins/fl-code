@@ -638,12 +638,13 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       ).pipe(
         Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
         Effect.flatMap((config) => {
-          // Only a confirmed native route may probe or publish the login's quota.
           const nativeUsage =
             !input.skipNativeUsage &&
             config !== undefined &&
             codexRoutesSpendNativeQuota(accountResponse, config.config);
-          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
+          const readAccountUsage =
+            !input.skipNativeUsage && accountResponse.account?.type === "chatgpt";
+          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = readAccountUsage
             ? readCodexRateLimits(client, deadlineMs)
             : Effect.undefined;
           return readUsage.pipe(
@@ -906,7 +907,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     : accountProbeStatus(snapshot);
   // Sign-in guidance still applies when Codex itself says it needs an OpenAI login.
   const usageLimits =
-    !snapshot.nativeUsage && !accountStatus.message
+    !snapshot.nativeUsage && snapshot.account.account?.type !== "chatgpt" && !accountStatus.message
       ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
       : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits
         ? makeUnavailableUsageLimits({
@@ -955,7 +956,14 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         : snapshot.models === undefined
           ? { message: "Codex did not return its model catalog in time." }
           : {}),
-      ...(managedAuth ? {} : { usageLimits }),
+      ...(managedAuth
+        ? {}
+        : !snapshot.nativeUsage && snapshot.account.account?.type === "chatgpt"
+          ? {
+              usageLimits: makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" }),
+              accountUsageLimits: usageLimits,
+            }
+          : { usageLimits }),
     },
   });
 });

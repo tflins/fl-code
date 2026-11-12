@@ -80,6 +80,16 @@ describe("new thread model fallback", () => {
     ["no fallback", { fallbackSelection: null }, selection],
     ["expired window", { now: Date.parse("2026-09-04T00:00:00Z") }, selection],
     [
+      "exhausted account on a custom route",
+      {
+        providers: [
+          { ...limited, accountUsageLimits: limited.usageLimits, usageLimits: undefined },
+          available,
+        ],
+      },
+      selection,
+    ],
+    [
       "environment disabled",
       {
         settings: {
@@ -1506,6 +1516,32 @@ describe("sameUsageLimitCommandCoverage", () => {
 });
 
 describe("external usage settings", () => {
+  it("displays a proxied login's quota with an account notice and no reset action", () => {
+    const accountUsageLimits = { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] };
+    const proxied = provider({
+      auth: { status: "authenticated", type: "chatgpt", email: "account@example.com" },
+      usageLimits: {
+        checkedAt: accountUsageLimits.checkedAt,
+        windows: [],
+        unavailable: { reason: "unsupported" },
+      },
+      accountUsageLimits,
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("host"),
+        { entry: { target: { label: "Host" } }, serverConfig: { providers: [proxied] } },
+      ],
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([
+      expect.objectContaining({ limits: accountUsageLimits, redeem: null }),
+    ]);
+    expect(collectLimitNotices(presentations)).toEqual([
+      "codex: Signed-in ChatGPT account limits. Usage through custom routes may use a different allowance.",
+    ]);
+    expect(exhaustedUsageWindow(proxied, now, "auto/deepseek-v4.1-flash")).toBeUndefined();
+  });
+
   it("deduplicates destinations across accounts and environments without inventing quota pools", () => {
     const managed = provider({
       usageLimits: {

@@ -437,6 +437,24 @@ it.layer(
       }),
     );
 
+    it.effect("reports a proxied ChatGPT login's limits separately from route limits", () =>
+      Effect.gen(function* () {
+        const rateLimits = {
+          snapshot: {
+            planType: "pro",
+            primary: { usedPercent: 100, windowDurationMins: 300 },
+          },
+          resetCredits: null,
+        };
+        const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+          Effect.succeed(makeCodexProbeSnapshot({ nativeUsage: false, rateLimits })),
+        );
+        assert.strictEqual(status.usageLimits?.unavailable?.reason, "unsupported");
+        assert.strictEqual(status.accountUsageLimits?.windows[0]?.usedPercent, 100);
+        assert.strictEqual(status.accountUsageLimits?.unavailable, undefined);
+      }),
+    );
+
     it.effect("returns unauthenticated when app-server requires OpenAI auth", () =>
       Effect.gen(function* () {
         const status = yield* checkCodexProviderStatus(defaultCodexSettings, () =>

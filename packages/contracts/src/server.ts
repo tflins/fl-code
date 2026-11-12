@@ -262,6 +262,8 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  /** Informational login quota; it does not constrain this provider's route. */
+  accountUsageLimits: Schema.optional(ServerProviderUsageLimits),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),

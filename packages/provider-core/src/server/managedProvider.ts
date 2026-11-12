@@ -270,12 +270,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
 
   const refreshUsage = Effect.fn("ManagedServerProvider.refreshUsage")(function* () {
     const { snapshot } = yield* Ref.get(snapshotStateRef);
-    if (
-      !snapshot.enabled ||
-      !snapshot.usageLimits ||
-      snapshot.usageLimits.unavailable?.reason === "unsupported"
-    )
-      return;
+    const limits = snapshot.accountUsageLimits ?? snapshot.usageLimits;
+    if (!snapshot.enabled || !limits || limits.unavailable?.reason === "unsupported") return;
     // An in-flight refresh may have read cached usage, so one refresh waits behind it.
     const claim = Symbol();
     const release = Ref.update(usageRefreshQueued, (queued) => (queued === claim ? null : queued));
