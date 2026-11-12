@@ -572,6 +572,7 @@ function makeCodexTestTurnInput(input: {
 function makeCodexReplayTurn(input: {
   readonly id: string;
   readonly status: "inProgress" | "completed" | "interrupted" | "failed";
+  readonly durationMs?: number | null;
 }): Record<string, unknown> {
   const terminal =
     input.status === "completed" || input.status === "interrupted" || input.status === "failed";
@@ -583,7 +584,7 @@ function makeCodexReplayTurn(input: {
     error: null,
     startedAt: 1782622440,
     completedAt: terminal ? 1782622450 : null,
-    durationMs: null,
+    durationMs: input.durationMs ?? null,
   };
 }
 
@@ -2405,6 +2406,211 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["clean", "rerouted", "recovered retry"] as const)(
+    "records throughput only for an uninterrupted model scope (%s)",
+    (scenario) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const nativeThreadId = "throughput-thread";
+          const nativeTurnId = "throughput-turn";
+          const usage = {
+            totalTokens: 2_150,
+            inputTokens: 2_000,
+            cachedInputTokens: 0,
+            outputTokens: 150,
+            reasoningOutputTokens: 40,
+          };
+          const boundaryFrames: ReadonlyArray<CodexReplay.CodexAppServerReplayEntry> =
+            scenario === "rerouted"
+              ? [
+                  {
+                    type: "emit_inbound",
+                    frame: {
+                      method: "model/rerouted",
+                      params: {
+                        threadId: nativeThreadId,
+                        turnId: nativeTurnId,
+                        fromModel: "gpt-6-sol",
+                        toModel: "gpt-6-astra",
+                        reason: "highRiskCyberActivity",
+                      },
+                    },
+                  },
+                ]
+              : scenario === "recovered retry"
+                ? [
+                    {
+                      type: "emit_inbound",
+                      frame: {
+                        method: "error",
+                        params: {
+                          threadId: nativeThreadId,
+                          turnId: nativeTurnId,
+                          willRetry: true,
+                          error: {
+                            message: "Reconnecting... 1/5",
+                            additionalDetails: "Stream disconnected.",
+                            codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 529 } },
+                          },
+                        },
+                      },
+                    },
+                    {
+                      type: "emit_inbound",
+                      frame: {
+                        method: "turn/plan/updated",
+                        params: {
+                          threadId: nativeThreadId,
+                          turnId: nativeTurnId,
+                          plan: [],
+                          explanation: null,
+                        },
+                      },
+                    },
+                  ]
+                : [];
+          const transcript = makeCodexReplayTranscript({
+            scenario: "throughput",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId,
+                prompt: "Measure this turn.",
+              }),
+              ...boundaryFrames,
+              {
+                type: "emit_inbound",
+                label: "command/started",
+                frame: {
+                  method: "item/started",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: nativeTurnId,
+                    item: {
+                      type: "commandExecution",
+                      id: "command-1",
+                      command: "sleep 4",
+                      cwd: "/workspace",
+                      processId: null,
+                      source: "unifiedExecStartup",
+                      status: "inProgress",
+                      commandActions: [],
+                      aggregatedOutput: null,
+                      exitCode: null,
+                      durationMs: null,
+                    },
+                    startedAtMs: 1_000_000,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "command/completed",
+                frame: {
+                  method: "item/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: nativeTurnId,
+                    item: {
+                      type: "commandExecution",
+                      id: "command-1",
+                      command: "sleep 4",
+                      cwd: "/workspace",
+                      processId: null,
+                      source: "unifiedExecStartup",
+                      status: "completed",
+                      commandActions: [],
+                      aggregatedOutput: "",
+                      exitCode: 0,
+                      durationMs: 4_000,
+                    },
+                    completedAtMs: 1_004_000,
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "usage",
+                frame: {
+                  method: "thread/tokenUsage/updated",
+                  params: {
+                    threadId: nativeThreadId,
+                    turnId: nativeTurnId,
+                    tokenUsage: { total: usage, last: usage, modelContextWindow: 200_000 },
+                  },
+                },
+              },
+              {
+                type: "emit_inbound",
+                label: "complete",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({
+                      id: nativeTurnId,
+                      status: "completed",
+                      durationMs: 15_000,
+                    }),
+                  },
+                },
+              },
+              { type: "runtime_exit", status: "success" },
+            ],
+          });
+          const harness = yield* makeCodexReplayHarness(transcript);
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("throughput-attempt"),
+              text: "Measure this turn.",
+            }),
+          );
+          yield* harness.firstTerminal;
+
+          assert.isFalse(
+            harness.events.some(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.status === "running" &&
+                event.providerTurn.throughputEstimate !== undefined,
+            ),
+          );
+          const completed = harness.events.findLast(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.threadId === harness.threadId &&
+              event.providerTurn.status === "completed",
+          );
+          assert.equal(completed?.type, "provider_turn.updated");
+          if (completed?.type !== "provider_turn.updated") return;
+          assert.equal(completed.providerTurn.turnTokenUsage?.outputTokens, 150);
+          assert.equal(completed.providerTurn.turnTokenUsage?.reasoningTokens, 40);
+          assert.deepEqual(
+            completed.providerTurn.throughputEstimate,
+            scenario === "clean"
+              ? {
+                  basis: "turn_wall_minus_known_waits",
+                  outputTokens: 150,
+                  durationMs: 11_000,
+                }
+              : undefined,
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
   );
 
   it.effect("stops asking for commands the user allowed for the session", () =>

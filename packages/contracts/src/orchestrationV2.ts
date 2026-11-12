@@ -244,6 +244,14 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
 export type OrchestrationV2ProviderTurnTokenUsage =
   typeof OrchestrationV2ProviderTurnTokenUsage.Type;
 
+export const OrchestrationV2ProviderTurnThroughputEstimate = Schema.Struct({
+  basis: Schema.Literal("turn_wall_minus_known_waits"),
+  outputTokens: NonNegativeInt,
+  durationMs: NonNegativeInt,
+});
+export type OrchestrationV2ProviderTurnThroughputEstimate =
+  typeof OrchestrationV2ProviderTurnThroughputEstimate.Type;
+
 export const OrchestrationV2ContextTransfer = Schema.Struct({
   id: ContextTransferId,
   type: OrchestrationV2ContextTransferType,
@@ -1227,6 +1235,7 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  throughputEstimate: Schema.optional(OrchestrationV2ProviderTurnThroughputEstimate),
   /** The model the provider reported running this turn's root agent, which can differ from the requested one. */
   model: Schema.optional(TrimmedNonEmptyString),
 });

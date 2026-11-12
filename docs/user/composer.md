@@ -126,6 +126,15 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+## Output throughput
+
+After a Codex turn completes, the composer shows an estimated output throughput such as
+`≈ 13 tok/s`. It divides the turn's output tokens, including reasoning and tool-call arguments
+once, by the full turn time minus confirmed tool, approval, and input waits. Network, prefill,
+and scheduling time remain included, so this is an estimate rather than pure decode speed.
+T3 Code hides the reading when the turn is incomplete or the time and token scopes cannot be
+matched reliably.
+
 ## Quote an assistant response
 
 On web and desktop, select text within one assistant response and choose

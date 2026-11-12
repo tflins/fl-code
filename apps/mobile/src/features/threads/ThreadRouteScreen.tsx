@@ -65,6 +65,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { deriveGenerationSpeed } from "@t3tools/client-runtime/state/generation-speed";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useSelectedThreadDetailState } from "../../state/use-thread-detail";
 import { useThreadSelection } from "../../state/use-thread-selection";
@@ -371,6 +372,8 @@ function ThreadRouteContent(
   );
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
+  const generationSpeed =
+    selectedThreadDetail === null ? null : deriveGenerationSpeed(selectedThreadDetail);
   const { selectedThreadCwd } = useSelectedThreadWorktree();
   const startSideChat = useStartSideChat();
   const composer = useThreadComposerState({ startSideChat });
@@ -967,6 +970,7 @@ function ThreadRouteContent(
             )
           }
           canOperateThread={canOperateThread}
+          generationSpeed={generationSpeed}
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           selectedThreadDetailRef={selectedThreadDetailRef}
           contentPresentation={contentPresentation}

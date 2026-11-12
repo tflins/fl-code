@@ -8,6 +8,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
+import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
@@ -213,6 +214,7 @@ import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import type { OrchestrationV2ProviderSession } from "@t3tools/contracts";
 
 export interface ThreadDetailScreenProps {
+  readonly generationSpeed?: GenerationSpeedPresentation | null;
   readonly header?: React.ReactNode;
   readonly draftMode?: {
     /** viewportHeight excludes the composer so draft chrome can resize it without feedback. */
@@ -1852,6 +1854,7 @@ function ThreadDetailBody(
                   ) : (
                     <>
                       <ThreadComposer
+                        generationSpeed={props.generationSpeed ?? null}
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}

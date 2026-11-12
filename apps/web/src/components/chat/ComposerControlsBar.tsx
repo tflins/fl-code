@@ -2,6 +2,7 @@ import type { ChatComposerProps } from "./ChatComposer";
 import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { type AppModelOption } from "../../modelSelection";
+import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
 import { CircleAlertIcon } from "lucide-react";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
 import { ComposerControl } from "./ComposerControl";
@@ -30,6 +31,7 @@ import {
 } from "./ComposerModelEffort";
 import type { useComposerProviderModel } from "./useComposerProviderModel";
 import { resolveComposerControlsOwnership } from "./composerControlsOwnership";
+import { GenerationSpeedIndicator } from "./GenerationSpeedIndicator";
 
 /**
  * The composer footer controls: the model picker (which also holds effort, speed and
@@ -41,6 +43,7 @@ const MODEL_TRIGGER_STATES = "data-popup-open:bg-accent data-popup-open:text-for
 
 export function ComposerControlsBar(props: {
   environmentId: EnvironmentId;
+  generationSpeed: GenerationSpeedPresentation | null;
   routeKind: ChatComposerProps["routeKind"];
   routeThreadRef: ChatComposerProps["routeThreadRef"];
   draftId: ChatComposerProps["draftId"];
@@ -88,6 +91,7 @@ export function ComposerControlsBar(props: {
 }) {
   const {
     environmentId,
+    generationSpeed,
     routeKind,
     routeThreadRef,
     draftId,
@@ -261,6 +265,9 @@ export function ComposerControlsBar(props: {
   ) : (
     <>
       {composerModelPicker}
+      {!composerControlsCollapsed && generationSpeed !== null ? (
+        <GenerationSpeedIndicator presentation={generationSpeed} />
+      ) : null}
 
       <>
         {restingBlockDefs.map((def, index) => {

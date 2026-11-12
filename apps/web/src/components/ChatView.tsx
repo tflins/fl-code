@@ -339,6 +339,7 @@ import {
   latestProviderTurnTokenUsage,
   shouldOfferResumeCompaction,
 } from "@t3tools/client-runtime/state/context-window";
+import { deriveGenerationSpeed } from "@t3tools/client-runtime/state/generation-speed";
 import {
   MOBILE_COMPOSER_VIEW_TRANSITION_NAME,
   MOBILE_DRAFT_HEADLINE_VIEW_TRANSITION_NAME,
@@ -544,6 +545,8 @@ export default function ChatView(props: ChatViewProps) {
     serverProjection,
     activeProviderThread,
   );
+  const generationSpeed =
+    serverProjection === null ? null : deriveGenerationSpeed(serverProjection);
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
@@ -3667,6 +3670,7 @@ export default function ChatView(props: ChatViewProps) {
                             ) : null}
                             {!composerMounted ? null : (
                               <ChatComposer
+                                generationSpeed={generationSpeed}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={multipleModelSelections}
