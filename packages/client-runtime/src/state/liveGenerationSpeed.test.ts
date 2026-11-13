@@ -2,6 +2,7 @@ import {
   EventId,
   MessageId,
   NodeId,
+  PlanId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -140,6 +141,8 @@ function assistantEvent(input: {
   readonly status?: "running" | "completed";
   readonly runId?: RunId | null;
   readonly providerTurnId?: ProviderTurnId | null;
+  readonly ordinal?: number;
+  readonly startedAtMs?: number;
 }): OrchestrationV2DomainEvent {
   return {
     id: EventId.make(`event-${input.id}-${input.atMs}`),
@@ -155,10 +158,10 @@ function assistantEvent(input: {
       providerTurnId: input.providerTurnId === undefined ? PROVIDER_TURN_ID : input.providerTurnId,
       nativeItemRef: null,
       parentItemId: null,
-      ordinal: 1,
+      ordinal: input.ordinal ?? 1,
       status: input.status ?? "running",
       title: null,
-      startedAt: at(0),
+      startedAt: at(input.startedAtMs ?? 0),
       completedAt: null,
       updatedAt: at(input.atMs),
       type: "assistant_message",
@@ -333,7 +336,7 @@ describe("live generation speed token estimate", () => {
 });
 
 describe("live generation speed window", () => {
-  it("uses the first batch as a baseline and waits for enough batches and span", () => {
+  it("shows a number after 250 ms of measured output without waiting for a long paragraph", () => {
     const tracker = makeLiveGenerationSpeedTracker();
 
     expect(
@@ -341,7 +344,7 @@ describe("live generation speed window", () => {
     ).toBeNull();
     expect(
       tracker.observeBatch([assistantEvent({ id: "a", text: "aa", atMs: 300 })]).presentation,
-    ).toBeNull();
+    ).toMatchObject({ label: "≈ 0.8 tok/s", durationMs: 300 });
 
     const first = tracker.observeBatch([assistantEvent({ id: "a", text: "aaaa", atMs: 800 })]);
     expect(first.presentation?.kind).toBe("live");
@@ -411,7 +414,7 @@ describe("live generation speed window", () => {
     expect(result.presentation?.label).toBe("≈ 50 tok/s");
   });
 
-  it("updates a sparse stream with two samples inside the rolling window", () => {
+  it("updates a sparse stream even when samples are more than two seconds apart", () => {
     const tracker = makeLiveGenerationSpeedTracker();
     const rates = (
       [
@@ -428,8 +431,104 @@ describe("live generation speed window", () => {
     );
     expect(rates[0]).toBeUndefined();
     expect(rates[1]).toBeCloseTo(82.5, 10);
-    expect(rates.slice(2)).toEqual([100 / 1.2, 100 / 1.2, 100 / 1.2]);
+    expect(rates[2]).toBeCloseTo(199 / 2.4, 10);
+    expect(rates.slice(3)).toEqual([200 / 2.4, 200 / 2.4]);
+
+    const sparse = makeLiveGenerationSpeedTracker();
+    sparse.observeBatch([assistantEvent({ id: "slow", text: "a".repeat(4), atMs: 0 })]);
+    for (const [atMs, length] of [
+      [2_600, 404],
+      [5_200, 804],
+      [7_800, 1_204],
+    ] as const) {
+      const reading = sparse.observeBatch([
+        assistantEvent({ id: "slow", text: "a".repeat(length), atMs }),
+      ]).presentation;
+      expect(reading?.tokensPerSecond).toBeCloseTo(100 / 2.6, 10);
+    }
   });
+
+  it("measures successive short paragraphs without resetting their shared window", () => {
+    const tracker = makeLiveGenerationSpeedTracker();
+    for (let index = 0; index < 5; index++) {
+      const atMs = index * 300;
+      const event = assistantEvent({
+        id: `paragraph-${index}`,
+        ordinal: index + 1,
+        text: "a".repeat(80),
+        atMs,
+        startedAtMs: atMs,
+      });
+      const reading = tracker.observeBatch([event]).presentation;
+      if (index > 0) expect(reading?.tokensPerSecond).toBeCloseTo(20 / 0.3, 10);
+      if (event.type !== "turn-item.updated" || event.payload.type !== "assistant_message") {
+        throw new Error("Expected an assistant item");
+      }
+      tracker.observeBatch([
+        {
+          ...event,
+          payload: {
+            ...event.payload,
+            status: "completed",
+            streaming: false,
+            completedAt: at(atMs + 100),
+          },
+          occurredAt: at(atMs + 100),
+        },
+      ]);
+    }
+  });
+
+  it.each(["reasoning", "proposed_plan"] as const)(
+    "counts %s across interleaved assistant paragraphs",
+    (type) => {
+      const tracker = makeLiveGenerationSpeedTracker();
+      const reasoning = (text: string, atMs: number): OrchestrationV2DomainEvent => {
+        const event = assistantEvent({ id: "reasoning", text, atMs });
+        if (event.type !== "turn-item.updated" || event.payload.type !== "assistant_message") {
+          throw new Error("Expected an assistant item");
+        }
+        const { messageId: _messageId, ...item } = event.payload;
+        return {
+          ...event,
+          payload:
+            type === "reasoning"
+              ? { ...item, type }
+              : { ...item, type, planId: PlanId.make("live-plan"), markdown: text },
+        };
+      };
+      tracker.observeBatch([reasoning("a".repeat(4), 0)]);
+      expect(
+        tracker.observeBatch([reasoning("a".repeat(404), 1_000)]).presentation?.outputTokens,
+      ).toBe(100);
+      tracker.observeBatch([
+        assistantEvent({ id: "body", ordinal: 2, text: "a".repeat(40), atMs: 1_300 }),
+      ]);
+      const interleaved = tracker.observeBatch([reasoning("a".repeat(804), 1_600)]).presentation;
+      expect(interleaved?.outputTokens).toBe(210);
+      expect(interleaved?.durationMs).toBe(1_600);
+      const final = reasoning("a".repeat(804), 1_700);
+      if (
+        final.type !== "turn-item.updated" ||
+        (final.payload.type !== "reasoning" && final.payload.type !== "proposed_plan")
+      ) {
+        throw new Error("Expected a streamed output item");
+      }
+      expect(
+        tracker.observeBatch([
+          {
+            ...final,
+            payload: {
+              ...final.payload,
+              streaming: false,
+              status: "completed",
+              completedAt: at(1_700),
+            },
+          },
+        ]).presentation,
+      ).toBe(interleaved);
+    },
+  );
 
   it("rejects a millisecond message estimate in streaming and completed snapshots", () => {
     for (const completed of [false, true]) {
@@ -457,7 +556,7 @@ describe("live generation speed window", () => {
     expect(valid?.label).toBe("≈ 100 tok/s");
   });
 
-  it("publishes at most once per second", () => {
+  it("limits streaming updates to four per second", () => {
     const tracker = makeLiveGenerationSpeedTracker();
     tracker.observeBatch([assistantEvent({ id: "a", text: "a", atMs: 0 })]);
     tracker.observeBatch([assistantEvent({ id: "a", text: "aa", atMs: 300 })]);
@@ -495,15 +594,15 @@ describe("live generation speed window", () => {
     ]).presentation;
 
     const duplicate = tracker.observeBatch([assistantEvent({ id: "a", text: "aaaa", atMs: 900 })]);
-    expect(duplicate.sawAssistantText).toBe(false);
+    expect(duplicate.sawModelOutput).toBe(false);
     expect(duplicate.presentation).toBe(published);
 
     const tool = tracker.observeBatch([toolEvent(1_000)]);
-    expect(tool.sawAssistantText).toBe(false);
+    expect(tool.sawModelOutput).toBe(false);
     expect(tool.presentation).toBe(published);
 
     const message = tracker.observeBatch([messageEvent("a".repeat(40), 1_100)]);
-    expect(message.sawAssistantText).toBe(false);
+    expect(message.sawModelOutput).toBe(false);
     expect(message.presentation).toBe(published);
   });
 
@@ -529,7 +628,7 @@ describe("live generation speed window", () => {
       claude,
     );
 
-    expect(result.sawAssistantText).toBe(false);
+    expect(result.sawModelOutput).toBe(false);
     expect(result.presentation).toBeNull();
   });
 
@@ -543,7 +642,7 @@ describe("live generation speed window", () => {
     expect(published).not.toBeNull();
 
     const late = tracker.observeBatch([assistantEvent({ id: "a", text: "aaaaa", atMs: 700 })]);
-    expect(late.sawAssistantText).toBe(false);
+    expect(late.sawModelOutput).toBe(false);
     expect(late.presentation).toMatchObject({ kind: "live", durationMs: 800 });
   });
 
@@ -631,7 +730,7 @@ describe("live generation speed window", () => {
       [assistantEvent({ id: "a", text: "a".repeat(20), atMs: 1_200 })],
       liveProjection({ runStatus: "completed" }),
     );
-    expect(late.sawAssistantText).toBe(false);
+    expect(late.sawModelOutput).toBe(false);
     expect(late.presentation).toMatchObject({ kind: "live", durationMs: 800 });
   });
 
@@ -652,7 +751,7 @@ describe("live generation speed window", () => {
         status: "completed",
       }),
     ]);
-    expect(completed.sawAssistantText).toBe(false);
+    expect(completed.sawModelOutput).toBe(false);
     expect(completed.presentation).toMatchObject({ kind: "live", durationMs: 800 });
   });
 
@@ -686,7 +785,7 @@ describe("live generation speed window", () => {
         providerTurnId: ProviderTurnId.make("turn-old"),
       }),
     ]);
-    expect(unrelated.sawAssistantText).toBe(false);
+    expect(unrelated.sawModelOutput).toBe(false);
     expect(unrelated.presentation).toBe(published);
   });
 
@@ -716,7 +815,7 @@ describe("live generation speed window", () => {
       ],
       multipleTurns,
     );
-    expect(oldTurn.sawAssistantText).toBe(false);
+    expect(oldTurn.sawModelOutput).toBe(false);
     expect(oldTurn.presentation).toBe(published);
 
     const completed = tracker.observeBatch([], {
@@ -736,8 +835,10 @@ describe("live generation speed window", () => {
       tracker.observeBatch([assistantEvent({ id: "a", text: "aaaa", atMs: 800 })]).presentation,
     ).not.toBeNull();
 
-    const rewritten = tracker.observeBatch([assistantEvent({ id: "a", text: "x", atMs: 1_000 })]);
-    expect(rewritten.sawAssistantText).toBe(false);
+    const rewritten = tracker.observeBatch([
+      assistantEvent({ id: "a", text: "x".repeat(100), atMs: 1_000 }),
+    ]);
+    expect(rewritten.sawModelOutput).toBe(false);
     expect(rewritten.presentation).toMatchObject({ kind: "live", durationMs: 800 });
   });
 
@@ -772,7 +873,7 @@ describe("live generation speed window", () => {
       ],
       liveProjection({ attemptStatus: "completed" }),
     );
-    expect(late.sawAssistantText).toBe(false);
+    expect(late.sawModelOutput).toBe(false);
     expect(late.presentation).toMatchObject({ kind: "live", durationMs: 800 });
   });
 
@@ -840,11 +941,11 @@ describe("live generation speed window", () => {
       [assistantEvent({ id: "a", text: "a".repeat(20), atMs: 2_000 })],
       nextProjection,
     );
-    expect(oldRunLateText.sawAssistantText).toBe(false);
+    expect(oldRunLateText.sawModelOutput).toBe(false);
     expect(oldRunLateText.presentation).toBe(live.presentation);
   });
 
-  it("retains the last reading through a long gap and excludes the gap from the next estimate", () => {
+  it("retains the last reading while idle and measures sparse output when it resumes", () => {
     const tracker = makeLiveGenerationSpeedTracker();
     tracker.observeBatch([assistantEvent({ id: "a", text: "a", atMs: 0 })]);
     tracker.observeBatch([assistantEvent({ id: "a", text: "aa", atMs: 300 })]);
@@ -856,12 +957,12 @@ describe("live generation speed window", () => {
     expect(
       tracker.observeBatch([assistantEvent({ id: "a", text: "a".repeat(20), atMs: 3_400 })])
         .presentation,
-    ).toBe(published);
+    ).toMatchObject({ durationMs: 2_600, outputTokens: 4 });
     tracker.observeBatch([assistantEvent({ id: "a", text: "a".repeat(24), atMs: 3_700 })]);
     const resumed = tracker.observeBatch([
       assistantEvent({ id: "a", text: "a".repeat(28), atMs: 4_200 }),
     ]).presentation;
-    expect(resumed).toMatchObject({ durationMs: 800, outputTokens: 2, tokensPerSecond: 2.5 });
+    expect(resumed).toMatchObject({ durationMs: 3_400, outputTokens: 6 });
 
     tracker.reset({ preserveReading: true });
     expect(tracker.observeBatch([]).presentation).toBe(resumed);

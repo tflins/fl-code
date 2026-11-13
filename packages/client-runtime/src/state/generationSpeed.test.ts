@@ -122,7 +122,7 @@ describe("generation speed presentation", () => {
       outputTokens: 84,
       durationMs: 2_000,
     });
-    expect(presentation?.details).toContain("visible assistant body text");
+    expect(presentation?.details).toContain("visible reasoning, and plans");
     expect(presentation?.details).toContain("multilingual character heuristic");
     expect(presentation?.details).toContain("hidden reasoning are excluded");
     expect(presentation?.details).toContain("completed-turn average instead uses");

@@ -104,8 +104,8 @@ export function presentLiveWindow(
     label: `≈ ${rate} tok/s`,
     details:
       `Most recent estimated output throughput: ${rate} tokens per second over ${durationSeconds} seconds. ` +
-      `Counts only visible assistant body text, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +
-      "Tool output, thinking summaries, and hidden reasoning are excluded. The completed-turn average instead uses the provider's reported output tokens and effective turn time.",
+      `Counts streamed assistant text, visible reasoning, and plans, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +
+      "Tool execution output, unstreamed tool arguments, and hidden reasoning are excluded. Observed stream gaps remain included. The completed-turn average instead uses the provider's reported output tokens and effective turn time.",
     outputTokens: estimatedTokens,
     durationMs,
     tokensPerSecond,

@@ -2755,7 +2755,7 @@ describe("EnvironmentThreads", () => {
       ]);
       yield* awaitThreadState(
         completedSnapshot.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(
         completedSnapshot.inputs,
@@ -2797,7 +2797,7 @@ describe("EnvironmentThreads", () => {
       ]);
       yield* awaitThreadState(
         providerTerminal.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(
         providerTerminal.inputs,
@@ -2837,7 +2837,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
 
       yield* Queue.offer(
@@ -2886,7 +2886,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(harness.wakeups, "application-active");
       yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
@@ -2965,7 +2965,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
 
       yield* TestClock.adjust("1500 millis");
@@ -3010,7 +3010,10 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed !== null);
+      yield* awaitThreadState(
+        completed.observed,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
+      );
       yield* Queue.offer(completed.inputs, liveRunEvent(liveSequence(8), "completed"));
       const finished = yield* awaitThreadState(
         completed.observed,
@@ -3042,7 +3045,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         snapshotted.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(snapshotted.inputs, snapshot(BASE_PROJECTION, 20));
       const restored = yield* awaitThreadState(
@@ -3081,7 +3084,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* SubscriptionRef.set(harness.supervisorState, {
         ...AVAILABLE_CONNECTION_STATE,
