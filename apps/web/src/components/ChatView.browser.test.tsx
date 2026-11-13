@@ -454,6 +454,7 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
     providerTurnId,
     status: "running" as const,
     streaming: true,
+    startedAt: at(0),
     completedAt: null,
   };
   await act(async () => {
@@ -463,14 +464,31 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
       [800, "Streaming an answer with more text"],
     ] as const) {
       await emitThreadEvent(thread.id, {
+        type: "message.updated",
+        occurredAt: at(milliseconds),
+        payload: {
+          id: item.messageId,
+          threadId: thread.id,
+          runId: run.id,
+          nodeId: null,
+          role: "assistant",
+          text,
+          createdBy: "agent",
+          creationSource: "provider",
+          attachments: [],
+          streaming: true,
+          createdAt: at(0),
+          updatedAt: at(milliseconds),
+        },
+      });
+      await emitThreadEvent(thread.id, {
         type: "turn-item.updated",
         occurredAt: at(milliseconds),
-        payload: { ...item, text, updatedAt: at(milliseconds) },
+        payload: { ...item, text: "", textOmitted: true, updatedAt: at(milliseconds) },
       });
     }
   });
   await expect.element(app.getByText(/^≈ [\d.]+ tok\/s$/)).toBeVisible();
-  const liveLabel = app.getByText(/^≈ [\d.]+ tok\/s$/).element().textContent!;
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "turn-item.updated",
@@ -485,7 +503,7 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
       },
     });
   });
-  await expect.element(app.getByText(liveLabel, { exact: true })).toBeVisible();
+  await expect.element(app.getByText(/^≈ [\d.]+ tok\/s$/)).toBeVisible();
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "provider-turn.updated",

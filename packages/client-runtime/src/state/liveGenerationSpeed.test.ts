@@ -351,6 +351,66 @@ describe("live generation speed window", () => {
     expect(first.presentation?.tokensPerSecond).toBeCloseTo(0.9375, 10);
   });
 
+  it("measures a short reply delivered as a single completed item and restores it on reconnect", () => {
+    const event = assistantEvent({
+      id: "short",
+      text: "你好世界".repeat(10),
+      atMs: 974,
+      streaming: false,
+      status: "completed",
+    });
+    if (event.type !== "turn-item.updated") throw new Error("Expected a turn item");
+    const item = { ...event.payload, completedAt: at(974) };
+    const projection = { ...liveProjection(), turnItems: [item] };
+    const tracker = makeLiveGenerationSpeedTracker();
+    const result = tracker.observeBatch([{ ...event, payload: item }], projection);
+    expect(result.presentation?.tokensPerSecond).toBeCloseTo(28 / 0.974, 10);
+    expect(result.presentation?.label).toBe("≈ 29 tok/s");
+    expect(tracker.observeBatch([toolEvent(2_000)], projection).presentation).toBe(
+      result.presentation,
+    );
+
+    const reconnected = makeLiveGenerationSpeedTracker().observeBatch([], projection);
+    expect(reconnected.presentation).toEqual(result.presentation);
+  });
+
+  it("measures the first streaming update using the message start time", () => {
+    const tracker = makeLiveGenerationSpeedTracker();
+    const result = tracker.observeBatch([
+      assistantEvent({ id: "short", text: "你好世界".repeat(10), atMs: 700 }),
+    ]);
+    expect(result.presentation?.label).toBe("≈ 40 tok/s");
+  });
+
+  it("restores the previous completed throughput while a new turn is running", () => {
+    const projection = liveProjection();
+    const previous = {
+      ...projection.providerTurns[0]!,
+      id: ProviderTurnId.make("previous-turn"),
+      runAttemptId: RunAttemptId.make("previous-attempt"),
+      ordinal: 0,
+      status: "completed" as const,
+      completedAt: at(1_000),
+      throughputEstimate: {
+        basis: "turn_wall_minus_known_waits" as const,
+        outputTokens: 100,
+        durationMs: 2_000,
+      },
+      turnTokenUsage: {
+        usageStatus: "complete" as const,
+        usageScope: "main_agent" as const,
+        inputTokens: 100,
+        outputTokens: 100,
+        hasSubagents: false,
+      },
+    };
+    const result = makeLiveGenerationSpeedTracker().observeBatch([], {
+      ...projection,
+      providerTurns: [previous, ...projection.providerTurns],
+    });
+    expect(result.presentation?.label).toBe("≈ 50 tok/s");
+  });
+
   it("publishes at most once per second", () => {
     const tracker = makeLiveGenerationSpeedTracker();
     tracker.observeBatch([assistantEvent({ id: "a", text: "a", atMs: 0 })]);

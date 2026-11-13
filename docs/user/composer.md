@@ -130,7 +130,7 @@ Leaving reasoning level or service tier unset uses the provider's own configurat
 
 输入框底部固定显示估算输出速度，例如 `≈ 42 tok/s`。正文输出时更新，进入思考或工具执行后保留最近一次读数；尚无有效样本时显示 `≈ … tok/s`。
 
-Codex 正文的实时读数采用短滚动窗口和多语言字符估算，不包含工具输出或隐藏思考。完成后的读数使用 provider 报告的输出 token 和扣除已确认等待的轮次耗时；其中可能包含思考、工具参数、网络、prefill 和调度开销。悬停可查看当前读数的统计口径。数据不足时不生成新读数，这些估算均不代表纯 decode 速度。
+Codex 正文的实时读数采用短滚动窗口和多语言字符估算；样本较少时使用该条回复的输出耗时，不包含工具输出或隐藏思考。完成后的读数使用 provider 报告的输出 token 和扣除已确认等待的轮次耗时；其中可能包含思考、工具参数、网络、prefill 和调度开销。悬停可查看当前读数的统计口径。数据不足时不生成新读数，这些估算均不代表纯 decode 速度。
 
 ## Quote an assistant response
 

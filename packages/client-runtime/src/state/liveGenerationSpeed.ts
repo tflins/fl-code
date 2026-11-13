@@ -11,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 import {
   deriveGenerationSpeed,
   presentLiveWindow,
+  presentCompletedTurn,
   type GenerationSpeedPresentation,
 } from "./generationSpeed.ts";
 
@@ -126,6 +127,11 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
         estimator,
       };
       rebaseline(eventTimeMs);
+      if (published === null && item.startedAt !== null) {
+        const durationMs = eventTimeMs - DateTime.toEpochMillis(item.startedAt);
+        published = presentLiveWindow(tokens, durationMs);
+        if (published !== null) publishedAtMs = eventTimeMs;
+      }
       return false;
     }
     if (item.id !== existing.id || item.ordinal < existing.ordinal) return false;
@@ -209,6 +215,9 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     const before = published;
     let sawAssistantText = false;
     let terminal = false;
+    if (published === null && projection !== null) {
+      published = restoreLatestReading(projection);
+    }
     const completed = projection === null ? null : deriveGenerationSpeed(projection);
     if (
       completed !== null &&
@@ -248,8 +257,13 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
           }
           break;
         case "turn-item.updated": {
-          const item = event.payload;
-          if (item.type !== "assistant_message" || item.textOmitted !== undefined) break;
+          const payload = event.payload;
+          if (payload.type !== "assistant_message") break;
+          const item =
+            payload.textOmitted === true
+              ? projection?.turnItems.findLast((candidate) => candidate.id === payload.id)
+              : payload;
+          if (item?.type !== "assistant_message" || item.textOmitted === true) break;
           if (
             item.runId !== scope.runId ||
             item.providerTurnId !== scope.providerTurnId ||
@@ -258,6 +272,8 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
             break;
           }
           if (item.streaming !== true || !isOrchestrationV2WorkActive(item.status)) {
+            const reading = presentCompletedMessage(item);
+            if (reading !== null) published = reading;
             if (currentText === null || item.ordinal >= currentText.ordinal) terminal = true;
             break;
           }
@@ -283,6 +299,53 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     observeBatch,
     reset,
   };
+}
+
+function restoreLatestReading(projection: OrchestrationV2ThreadProjection) {
+  let latestAt = -Infinity;
+  let reading: GenerationSpeedPresentation | null = null;
+  for (const turn of projection.providerTurns) {
+    if (turn.completedAt === null) continue;
+    const atMs = DateTime.toEpochMillis(turn.completedAt);
+    if (atMs <= latestAt) continue;
+    const candidate = presentCompletedTurn(turn);
+    if (candidate !== null) {
+      latestAt = atMs;
+      reading = candidate;
+    }
+  }
+  for (const item of projection.turnItems) {
+    if (item.type !== "assistant_message" || item.completedAt === null) continue;
+    const atMs = DateTime.toEpochMillis(item.completedAt);
+    if (atMs <= latestAt) continue;
+    const providerThread = projection.providerThreads.find(
+      (thread) => thread.id === item.providerThreadId,
+    );
+    if (providerThread?.driver !== "codex") continue;
+    const candidate = presentCompletedMessage(item);
+    if (candidate !== null) {
+      latestAt = atMs;
+      reading = candidate;
+    }
+  }
+  return reading;
+}
+
+function presentCompletedMessage(
+  item: OrchestrationV2TurnItem & { readonly type: "assistant_message" },
+) {
+  if (
+    item.status !== "completed" ||
+    item.streaming ||
+    item.textOmitted === true ||
+    item.startedAt === null ||
+    item.completedAt === null
+  )
+    return null;
+  return presentLiveWindow(
+    estimateVisibleTextTokens(item.text),
+    DateTime.toEpochMillis(item.completedAt) - DateTime.toEpochMillis(item.startedAt),
+  );
 }
 
 function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScope | null {

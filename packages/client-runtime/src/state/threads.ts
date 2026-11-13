@@ -283,7 +283,13 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
   const awaitingCompletion = yield* Ref.make(false);
   const applyLock = yield* Semaphore.make(1);
   const liveTracker = makeLiveGenerationSpeedTracker();
-  liveTracker.observeBatch([], Option.getOrNull(initialState.data));
+  const initialReading = liveTracker.observeBatch([], Option.getOrNull(initialState.data));
+  if (initialReading.presentation !== null) {
+    yield* SubscriptionRef.update(state, (current) => ({
+      ...current,
+      liveGenerationSpeed: initialReading.presentation,
+    }));
+  }
   const resetLiveGeneration = Effect.gen(function* () {
     liveTracker.reset();
     yield* SubscriptionRef.update(state, (current) =>
@@ -441,7 +447,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     },
   ) {
     yield* resetLiveGeneration;
-    liveTracker.observeBatch([], thread);
+    const reading = liveTracker.observeBatch([], thread).presentation;
     const waiting = yield* Ref.get(awaitingCompletion);
     const sequence = yield* SubscriptionRef.get(lastSequence);
     // Atomic with concurrent history meta updates: never get-then-set the whole
@@ -465,7 +471,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         error: previous.error,
         history,
         sequence,
-        liveGenerationSpeed: null,
+        liveGenerationSpeed: reading,
       };
     });
     // Active projections can update many times per second and retain large tool
@@ -620,17 +626,9 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
           current = next;
           if (applied._tag !== "noop") result = applied;
           if (applied._tag === "delete") break;
-        }
-        if (
-          result._tag !== "delete" &&
-          !waiting &&
-          current.status === "live" &&
-          Option.isSome(current.data)
-        ) {
-          live = liveTracker.observeBatch(
-            fresh.map((item) => item.event),
-            current.data.value,
-          );
+          if (!waiting && current.status === "live" && Option.isSome(current.data)) {
+            live = liveTracker.observeBatch([item.event], current.data.value);
+          }
         }
         const withLive =
           live === undefined || current.liveGenerationSpeed === live.presentation

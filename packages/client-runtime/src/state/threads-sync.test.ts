@@ -2566,39 +2566,45 @@ describe("EnvironmentThreads", () => {
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness({ cached: BASE_PROJECTION });
-        yield* Queue.offerAll(harness.inputs, [
-          ...liveStartEvents(liveSequence(1)),
-          liveAssistantEvent({
-            sequence: liveSequence(5),
+        const events = [...liveStartEvents(liveSequence(1))];
+        for (const [index, atMs, text] of [
+          [0, 0, "a".repeat(400)],
+          [1, 300, "a".repeat(800)],
+          [2, 800, "a".repeat(1_600)],
+        ] as const) {
+          events.push(liveAssistantMessageEvent(liveSequence(5 + index * 2), text, atMs));
+          const item = liveAssistantEvent({
+            sequence: liveSequence(6 + index * 2),
             itemId: "live-assistant",
-            text: "a",
-            atMs: 0,
-          }),
-          liveAssistantMessageEvent(liveSequence(6), "a".repeat(40), 300),
-          liveAssistantEvent({
-            sequence: liveSequence(7),
-            itemId: "live-assistant",
-            text: "aa",
-            atMs: 300,
-          }),
-          liveAssistantEvent({
-            sequence: liveSequence(8),
-            itemId: "live-assistant",
-            text: "aaaa",
-            atMs: 800,
-          }),
-        ]);
+            text,
+            atMs,
+          });
+          if (
+            item.event.type !== "turn-item.updated" ||
+            item.event.payload.type !== "assistant_message"
+          )
+            throw new Error("Expected an assistant turn item");
+          events.push({
+            ...item,
+            event: {
+              ...item.event,
+              payload: { ...item.event.payload, text: "", textOmitted: true },
+            },
+          });
+        }
+        events.push(liveProviderTurnEvent(liveSequence(11), "completed"));
+        yield* Queue.offerAll(harness.inputs, events);
 
         const live = yield* awaitThreadState(
           harness.observed,
-          (value) => value.liveGenerationSpeed !== null,
+          (value) => value.sequence === liveSequence(11),
         );
         expect(live.liveGenerationSpeed).toMatchObject({
           kind: "live",
-          label: "≈ 0.9 tok/s",
+          label: "≈ 375 tok/s",
           durationMs: 800,
         });
-        expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(0.75, 10);
+        expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(300, 10);
       }),
   );
 
