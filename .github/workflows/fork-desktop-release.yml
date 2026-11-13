@@ -25,14 +25,14 @@ concurrency:
 
 jobs:
   release:
-    if: github.repository == 'tflins/t3code'
+    if: github.repository == 'tflins/fl-code'
     runs-on: macos-26
     timeout-minutes: 90
     permissions:
       contents: write
     env:
       EXPLICIT_RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
-      T3CODE_DESKTOP_UPDATE_REPOSITORY: tflins/t3code
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: tflins/fl-code
       # The fork updater replaces verified ZIPs itself; keep electron-updater feeds disabled.
       T3CODE_DESKTOP_DISABLE_UPDATE_FEED: "true"
       T3CODE_DESKTOP_SIGNED: "false"

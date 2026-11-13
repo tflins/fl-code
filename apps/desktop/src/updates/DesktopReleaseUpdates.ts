@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
@@ -23,7 +24,7 @@ import {
   openUpdateProgress,
   type DesktopUpdateProgress,
 } from "./DesktopUpdateProgress.ts";
-import { launchMacUpdate, prepareMacUpdate } from "./forkMacUpdater.ts";
+import { cleanupMacUpdates, launchMacUpdate, prepareMacUpdate } from "./forkMacUpdater.ts";
 import {
   FORK_RELEASE_REPOSITORY,
   GitHubReleases,
@@ -76,6 +77,7 @@ export class DesktopReleaseUpdates extends Context.Service<
   {
     readonly supported: boolean;
     readonly checkAndPrompt: Effect.Effect<void>;
+    readonly confirmStartup: Effect.Effect<void>;
     readonly listen: Effect.Effect<void>;
   }
 >()("@t3tools/desktop/updates/DesktopReleaseUpdates") {}
@@ -190,7 +192,9 @@ const make = Effect.gen(function* () {
   const electronDialog = yield* ElectronDialog.ElectronDialog;
   const httpClient = followReleaseRedirects(yield* HttpClient.HttpClient);
   const lastNotifiedVersion = yield* Ref.make(Option.none<string>());
+  const startupConfirmed = yield* Ref.make(false);
   const actionSemaphore = yield* Semaphore.make(1);
+  const scope = yield* Scope.Scope;
   const runtimeContext = yield* Effect.context<DesktopReleaseUpdatesRuntimeServices>();
   const runPromise = Effect.runPromiseWith(runtimeContext);
   const supported =
@@ -438,15 +442,31 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const cleanup = Effect.fn("DesktopReleaseUpdates.cleanup")(function* () {
+    if (!supported || !(yield* Ref.get(startupConfirmed))) return;
+    const appBundlePath = macAppBundlePath(process.execPath);
+    if (appBundlePath === undefined) return;
+    yield* Effect.tryPromise({
+      try: () => cleanupMacUpdates({ appBundlePath, currentVersion: environment.appVersion }),
+      catch: (cause) => new ForkReleaseInstallError({ stage: "cleanup", cause }),
+    }).pipe(Effect.catch((error) => logWarning("could not clean update files", { error })));
+  }, actionSemaphore.withPermits(1));
+
+  const confirmStartup = Effect.gen(function* () {
+    if (yield* Ref.getAndSet(startupConfirmed, true)) return;
+    yield* cleanup().pipe(Effect.forkIn(scope));
+  }).pipe(Effect.withSpan("DesktopReleaseUpdates.confirmStartup"));
+
   const listen = supported
     ? Effect.sleep(STARTUP_DELAY).pipe(
+        Effect.andThen(cleanup()),
         Effect.andThen(checkAndNotify),
         Effect.andThen(Effect.sleep(POLL_INTERVAL)),
         Effect.forever,
       )
     : Effect.void;
 
-  return DesktopReleaseUpdates.of({ supported, checkAndPrompt, listen });
+  return DesktopReleaseUpdates.of({ supported, checkAndPrompt, confirmStartup, listen });
 });
 
 export const layer = Layer.effect(DesktopReleaseUpdates, make);

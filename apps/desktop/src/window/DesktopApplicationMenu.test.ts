@@ -90,6 +90,7 @@ const makeLayerDesktopReleaseUpdates = (
   Layer.succeed(DesktopReleaseUpdates.DesktopReleaseUpdates, {
     supported,
     checkAndPrompt,
+    confirmStartup: Effect.void,
     listen: Effect.void,
   } satisfies DesktopReleaseUpdates.DesktopReleaseUpdates["Service"]);
 

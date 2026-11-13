@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as DesktopWebLinks from "../../app/DesktopWebLinks.ts";
+import * as DesktopReleaseUpdates from "../../updates/DesktopReleaseUpdates.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 
@@ -12,5 +13,9 @@ export const setReady = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.webLinks.setReady")(function* (ready) {
     const webLinks = yield* DesktopWebLinks.DesktopWebLinks;
     yield* webLinks.setRendererReady(ready);
+    if (ready) {
+      const updates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
+      yield* updates.confirmStartup;
+    }
   }),
 });

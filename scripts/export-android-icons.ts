@@ -187,23 +187,56 @@ const exportAndroidIcons = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repositoryRoot = path.resolve(import.meta.dirname, "..");
-  const outputs = [
-    ["android-icon-foreground.png", yield* renderForeground(repositoryRoot, ADAPTIVE_CANVAS)],
-    [
-      "android-icon-background-dev.png",
-      yield* renderDevelopmentBackground(repositoryRoot, ADAPTIVE_CANVAS),
-    ],
-    [
-      "android-icon-background-nightly.png",
-      yield* renderNightlyBackground(repositoryRoot, ADAPTIVE_CANVAS),
-    ],
-    ["android-splash-icon-dev.png", yield* renderSplashIcon(repositoryRoot, "dev")],
-    ["android-splash-icon-nightly.png", yield* renderSplashIcon(repositoryRoot, "nightly")],
-    ["android-splash-icon-prod.png", yield* renderSplashIcon(repositoryRoot, "prod")],
-  ] as const;
+  const outputs = process.argv.includes("--fork")
+    ? []
+    : ([
+        ["android-icon-foreground.png", yield* renderForeground(repositoryRoot, ADAPTIVE_CANVAS)],
+        [
+          "android-icon-background-dev.png",
+          yield* renderDevelopmentBackground(repositoryRoot, ADAPTIVE_CANVAS),
+        ],
+        [
+          "android-icon-background-nightly.png",
+          yield* renderNightlyBackground(repositoryRoot, ADAPTIVE_CANVAS),
+        ],
+        ["android-splash-icon-dev.png", yield* renderSplashIcon(repositoryRoot, "dev")],
+        ["android-splash-icon-nightly.png", yield* renderSplashIcon(repositoryRoot, "nightly")],
+        ["android-splash-icon-prod.png", yield* renderSplashIcon(repositoryRoot, "prod")],
+      ] as const);
   for (const [name, contents] of outputs) {
     yield* fs.writeFile(path.join(repositoryRoot, OUTPUT_DIRECTORY, name), contents);
     yield* Console.log(`wrote ${OUTPUT_DIRECTORY}/${name}`);
+  }
+  const forkIcon = path.join(repositoryRoot, "assets/fork/fl-code-nightly-macos-1024.png");
+  const forkMark = yield* fs.readFile(path.join(repositoryRoot, "assets/fork/fl-mark.svg"));
+  const forkAssets = yield* Effect.tryPromise({
+    try: async () => {
+      const mobile = await sharp(forkIcon).flatten({ background: "#111533" }).png().toBuffer();
+      const artwork = async (size: number) => {
+        const iconSize = Math.round(size * 0.9);
+        const icon = await sharp(forkIcon).resize(iconSize).png().toBuffer();
+        return sharp({
+          create: { width: size, height: size, channels: 4, background: "transparent" },
+        })
+          .composite([{ input: icon, gravity: "center" }])
+          .png()
+          .toBuffer();
+      };
+      return [
+        ["assets/fork/fl-code-mobile-1024.png", mobile],
+        ["apps/mobile/assets/android-icon-foreground-fl.png", await artwork(ADAPTIVE_CANVAS)],
+        ["apps/mobile/assets/android-splash-icon-fl.png", await artwork(SPLASH_CANVAS)],
+        [
+          "apps/mobile/assets/android-icon-mark-fl.png",
+          await sharp(forkMark).resize(ADAPTIVE_CANVAS).png().toBuffer(),
+        ],
+      ] as const;
+    },
+    catch: (cause) => new AndroidIconRenderError({ layer: "fork", cause }),
+  });
+  for (const [name, contents] of forkAssets) {
+    yield* fs.writeFile(path.join(repositoryRoot, name), contents);
+    yield* Console.log(`wrote ${name}`);
   }
 });
 

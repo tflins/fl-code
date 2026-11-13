@@ -2,7 +2,7 @@
 
 ## Fork 维护约定
 
-本仓库是 [`tflins/t3code`](https://github.com/tflins/t3code)，上游为 [`pingdotgg/t3code`](https://github.com/pingdotgg/t3code)。本节记录定制版的维护约定，后续章节保留上游开发说明。
+本仓库是 [`tflins/fl-code`](https://github.com/tflins/fl-code)，上游为 [`pingdotgg/t3code`](https://github.com/pingdotgg/t3code)。本节记录定制版的维护约定，后续章节保留上游开发说明。
 
 - 现有定制包括 macOS 桌面应用名称 `FL Code (Nightly)`、独立发布与自更新，以及子 Agent 交接记录。交接记录目前覆盖 T3 应用管理的委派任务（`app_owned`），provider 原生子 Agent 的覆盖范围需单独核对。
 - 上游基线由 [`.github/fork-release.json`](.github/fork-release.json) 固定到已发布的 Nightly 标签。同步采用合并该标签的方式，保留并复核定制行为；不得通过重置或强制覆盖自己的主线同步。

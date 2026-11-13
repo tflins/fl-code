@@ -1,3 +1,17 @@
+# FL Code
+
+<p align="center"><img src="./assets/fork/fl-code-nightly-macos-1024.png" width="96" height="96" alt="FL Code logo" /></p>
+
+FL Code 是基于 [T3 Code](https://github.com/pingdotgg/t3code) 独立维护的定制版，提供 macOS Apple Silicon Nightly 安装包、独立自更新、输出速度显示和子 Agent 交接记录，并持续合入上游已发布的 Nightly 更新。
+
+- [下载 FL Code Nightly](https://github.com/tflins/fl-code/releases)
+- [定制版发布与更新](./docs/operations/fork-release.md)
+- [上游 T3 Code](https://github.com/pingdotgg/t3code)
+
+官方 npm、移动端和软件包安装渠道属于上游项目。
+
+---
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).

@@ -148,6 +148,7 @@ it.effect.each([false, true])(
           Effect.provideService(DesktopReleaseUpdates.DesktopReleaseUpdates, {
             supported: false,
             checkAndPrompt: Effect.void,
+            confirmStartup: Effect.void,
             listen: Effect.void,
           }),
           Effect.provideService(DesktopUpdates.DesktopUpdates, {

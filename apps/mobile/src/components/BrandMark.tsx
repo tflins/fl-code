@@ -3,11 +3,11 @@ import { Image } from "expo-image";
 import { View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
-import { T3_CODE_BRAND_MARK_SOURCE } from "./brandAssets";
+import { APP_BRAND_MARK_SOURCE } from "./brandAssets";
+import { MOBILE_APP_BASE_NAME, resolveMobileStageLabel } from "../lib/mobileBranding";
 
 const appVariant = Constants.expoConfig?.extra?.appVariant;
-const DEFAULT_STAGE_LABEL =
-  appVariant === "development" ? "Dev" : appVariant === "preview" ? "Preview" : "Beta";
+const DEFAULT_STAGE_LABEL = resolveMobileStageLabel(appVariant);
 
 export function BrandMark(props: { readonly compact?: boolean; readonly stageLabel?: string }) {
   const compact = props.compact ?? false;
@@ -17,7 +17,7 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
   return (
     <View className="flex-row items-center gap-3">
       <Image
-        source={T3_CODE_BRAND_MARK_SOURCE}
+        source={APP_BRAND_MARK_SOURCE}
         accessibilityIgnoresInvertColors
         style={{
           width: iconSize,
@@ -27,7 +27,9 @@ export function BrandMark(props: { readonly compact?: boolean; readonly stageLab
       />
       <View className="gap-1">
         <View className="flex-row items-center gap-2">
-          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">T3 Code</Text>
+          <Text className="text-lg font-t3-bold tracking-[-0.4px] text-foreground">
+            {MOBILE_APP_BASE_NAME}
+          </Text>
           <View className="rounded-full bg-subtle px-2 py-1">
             <Text className="text-3xs font-t3-bold tracking-[1.1px] uppercase text-foreground-muted">
               {stageLabel}

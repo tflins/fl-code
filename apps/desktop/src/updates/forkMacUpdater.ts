@@ -4,9 +4,11 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { compareSemverVersions } from "@t3tools/shared/semver";
 
 const FORK_BUNDLE_IDENTIFIER = "com.t3tools.t3code";
 const UPDATE_DIRECTORY_PREFIX = ".t3code-update-";
+const CLEANUP_DIRECTORY_PREFIX = ".t3code-update-cleanup-";
 const STALE_UPDATE_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface PreparedMacUpdate {
@@ -27,12 +29,12 @@ interface PrepareMacUpdateInput {
 export async function prepareMacUpdate(input: PrepareMacUpdateInput): Promise<PreparedMacUpdate> {
   const parentDirectory = NodePath.dirname(input.appBundlePath);
   await NodeFSP.access(parentDirectory, NodeFS.constants.W_OK);
-  await removeStaleUpdateDirectories(parentDirectory);
 
   const workDirectory = await NodeFSP.mkdtemp(
     NodePath.join(parentDirectory, UPDATE_DIRECTORY_PREFIX),
   );
   try {
+    await NodeFSP.writeFile(NodePath.join(workDirectory, "pending"), String(process.pid));
     const zipPath = NodePath.join(workDirectory, "update.zip");
     await NodeFSP.writeFile(zipPath, input.zipBytes);
 
@@ -109,6 +111,34 @@ export async function launchMacUpdate(update: PreparedMacUpdate): Promise<void> 
   });
 }
 
+export async function cleanupMacUpdates(input: {
+  readonly appBundlePath: string;
+  readonly currentVersion: string;
+}): Promise<void> {
+  if ((await readUpdateBundleVersion(input.appBundlePath)) !== input.currentVersion) return;
+  const parentDirectory = NodePath.dirname(input.appBundlePath);
+  const entries = await NodeFSP.readdir(parentDirectory, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.isDirectory() || !entry.name.startsWith(UPDATE_DIRECTORY_PREFIX)) return;
+      const directory = NodePath.join(parentDirectory, entry.name);
+      if (entry.name.startsWith(CLEANUP_DIRECTORY_PREFIX)) {
+        await NodeFSP.rm(directory, { recursive: true, force: true });
+        return;
+      }
+      if (await canRemoveUpdateDirectory(directory, input.currentVersion)) {
+        // Preserve cleanup ownership if deleting a large backup is interrupted.
+        const discarded = NodePath.join(
+          parentDirectory,
+          `${CLEANUP_DIRECTORY_PREFIX}${NodeCrypto.randomUUID()}`,
+        );
+        await NodeFSP.rename(directory, discarded);
+        await NodeFSP.rm(discarded, { recursive: true, force: true });
+      }
+    }),
+  );
+}
+
 async function findExtractedAppBundle(extractedDirectory: string): Promise<string> {
   const entries = await NodeFSP.readdir(extractedDirectory, { withFileTypes: true });
   const matches: string[] = [];
@@ -162,21 +192,53 @@ async function runFile(file: string, args: ReadonlyArray<string>): Promise<strin
   });
 }
 
-async function removeStaleUpdateDirectories(parentDirectory: string): Promise<void> {
-  const now = Date.now();
-  const entries = await NodeFSP.readdir(parentDirectory, { withFileTypes: true });
-  await Promise.all(
-    entries.map(async (entry) => {
-      if (!entry.isDirectory() || !entry.name.startsWith(UPDATE_DIRECTORY_PREFIX)) return;
-      const candidate = NodePath.join(parentDirectory, entry.name);
-      const modifiedAt = await NodeFSP.stat(candidate)
-        .then((value) => value.mtimeMs)
-        .catch(() => now);
-      if (now - modifiedAt >= STALE_UPDATE_AGE_MS) {
-        await NodeFSP.rm(candidate, { recursive: true, force: true }).catch(() => undefined);
-      }
-    }),
-  );
+async function canRemoveUpdateDirectory(
+  directory: string,
+  currentVersion: string,
+): Promise<boolean> {
+  const entries = await NodeFSP.readdir(directory);
+  const pending = entries.includes("pending") && !entries.includes("completed");
+  if (entries.includes("previous.app")) {
+    if (pending) return false;
+    const previousVersion = await readUpdateBundleVersion(NodePath.join(directory, "previous.app"));
+    if (previousVersion === undefined) return false;
+    try {
+      if (compareSemverVersions(previousVersion, currentVersion) >= 0) return false;
+    } catch {
+      return false;
+    }
+    const staged = await NodeFSP.readdir(NodePath.join(directory, "extracted")).catch(
+      (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
+      },
+    );
+    return !staged.some((name) => name.endsWith(".app"));
+  }
+  if (
+    !entries.some((name) => name === "update.zip" || name === "extracted" || name === "install.sh")
+  ) {
+    return false;
+  }
+  const modifiedAt = (await NodeFSP.stat(directory)).mtimeMs;
+  if (Date.now() - modifiedAt < STALE_UPDATE_AGE_MS) return false;
+  if (!pending) return true;
+  const ownerPid = Number(await NodeFSP.readFile(NodePath.join(directory, "pending"), "utf8"));
+  if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) return false;
+  try {
+    process.kill(ownerPid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+async function readUpdateBundleVersion(appPath: string): Promise<string | undefined> {
+  const infoPath = NodePath.join(appPath, "Contents", "Info.plist");
+  if (!(await NodeFSP.lstat(appPath).catch(() => undefined))?.isDirectory()) return undefined;
+  const identifier = await readPlistValue(infoPath, "CFBundleIdentifier").catch(() => undefined);
+  if (identifier !== FORK_BUNDLE_IDENTIFIER) return undefined;
+  return readPlistValue(infoPath, "CFBundleShortVersionString").catch(() => undefined);
 }
 
 const MAC_UPDATE_SCRIPT = `#!/bin/sh
@@ -232,4 +294,5 @@ fi
 /bin/mv "$target" "$backup" || fail
 /bin/mv "$staged" "$destination" || fail
 open_app "$destination" || fail
+: > "$work/completed"
 `;

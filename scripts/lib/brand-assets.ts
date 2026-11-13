@@ -1,4 +1,5 @@
 export const BRAND_ASSET_PATHS = {
+  forkMobileIconPng: "assets/fork/fl-code-mobile-1024.png",
   forkNightlyMacIconPng: "assets/fork/fl-code-nightly-macos-1024.png",
 
   developmentIconComposerProject: "assets/dev/app-icon.icon",

@@ -55,6 +55,8 @@ Do not edit the generated PNG or ICO files directly.
 
 ## Android launcher and splash artwork
 
+FL Code 的移动端图标复用 `fork/fl-code-nightly-macos-1024.png`，通过 `vp run icons:export:android --fork` 生成移动端主图、Android 自适应前景和启动图。`fork/fl-mark.svg` 提供通知、主题图标及 iOS 小组件的单色标记。应用名称和 Android 包名由 `apps/mobile/app.config.ts` 定义，移动端默认关闭上游 OTA 更新。
+
 Android masks the central 72dp of a 108dp adaptive canvas, and the Android 12+ splash screen masks
 the central two thirds of a 288dp canvas, so the Icon Composer exports cannot be used directly:
 their rounded-square silhouette gets framed again and the wordmark is cropped. The Android artwork

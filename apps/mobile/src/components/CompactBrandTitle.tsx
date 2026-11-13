@@ -1,12 +1,13 @@
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
+import { Image } from "expo-image";
 import { useState } from "react";
 import { Platform, View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
-import { T3Wordmark } from "./T3Wordmark";
+import { APP_BRAND_MARK_SOURCE } from "./brandAssets";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
-import { resolveMobileStageLabel } from "../lib/mobileBranding";
+import { MOBILE_APP_BASE_NAME, resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
@@ -39,7 +40,7 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? "T3 Code, Threads"}
+      accessibilityLabel={props.accessibilityLabel ?? `${MOBILE_APP_BASE_NAME}, Threads`}
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -49,15 +50,18 @@ export function CompactBrandTitle(
         props.fit && { flexShrink: 0 },
       ]}
     >
-      <T3Wordmark colorClassName="accent-icon" height={Math.round(15 * scale)} />
-      {/* A logo beside a fixed-size wordmark: it may grow with Dynamic Type, not crowd the bar. */}
+      <Image
+        source={APP_BRAND_MARK_SOURCE}
+        accessibilityIgnoresInvertColors
+        style={{ width: 28 * scale, height: 28 * scale, borderRadius: 7 * scale }}
+      />
       <Text
         allowFontScaling={props.allowFontScaling}
         maxFontSizeMultiplier={BRAND_MAX_FONT_SCALE}
         className="font-t3-medium text-foreground-muted"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        Code
+        {MOBILE_APP_BASE_NAME}
       </Text>
       {showStage ? (
         <View

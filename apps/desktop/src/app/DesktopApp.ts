@@ -357,12 +357,12 @@ const startup = Effect.gen(function* () {
   yield* previewPasskeys.configure;
   yield* applicationMenu.configure;
   yield* updates.configure;
-  yield* releaseUpdates.listen.pipe(Effect.forkScoped);
   yield* DesktopRemoteUpdates.listen;
   yield* DesktopStartupRecovery.listen;
   // Portal identity is prepared pre-ready; MIME helpers must not gate the backend or window.
   yield* linuxUrlHandler.register.pipe(Effect.forkScoped);
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
+  yield* releaseUpdates.listen.pipe(Effect.forkScoped);
 }).pipe(Effect.withSpan("desktop.startup"));
 
 const scopedProgram = Effect.scoped(

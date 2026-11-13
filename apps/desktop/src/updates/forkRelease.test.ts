@@ -15,12 +15,12 @@ const release = (version: string, overrides: Partial<GitHubRelease> = {}): GitHu
   assets: [
     {
       name: `T3-Code-${version}-arm64.zip`,
-      browser_download_url: `https://github.com/tflins/t3code/releases/download/tflins-v${version}/T3-Code-${version}-arm64.zip`,
+      browser_download_url: `https://github.com/tflins/fl-code/releases/download/tflins-v${version}/T3-Code-${version}-arm64.zip`,
       size: 1234,
     },
     {
       name: "SHA256SUMS",
-      browser_download_url: `https://github.com/tflins/t3code/releases/download/tflins-v${version}/SHA256SUMS`,
+      browser_download_url: `https://github.com/tflins/fl-code/releases/download/tflins-v${version}/SHA256SUMS`,
       size: 160,
     },
   ],
@@ -47,11 +47,11 @@ describe("fork desktop releases", () => {
     assert.deepEqual(selected, {
       tagName: "tflins-v0.1.8-nightly.20261110.4400-tflins.1",
       version: "0.1.8-nightly.20261110.4400-tflins.1",
-      url: "https://github.com/tflins/t3code/releases/tag/tflins-v0.1.8-nightly.20261110.4400-tflins.1",
+      url: "https://github.com/tflins/fl-code/releases/tag/tflins-v0.1.8-nightly.20261110.4400-tflins.1",
       zipUrl:
-        "https://github.com/tflins/t3code/releases/download/tflins-v0.1.8-nightly.20261110.4400-tflins.1/T3-Code-0.1.8-nightly.20261110.4400-tflins.1-arm64.zip",
+        "https://github.com/tflins/fl-code/releases/download/tflins-v0.1.8-nightly.20261110.4400-tflins.1/T3-Code-0.1.8-nightly.20261110.4400-tflins.1-arm64.zip",
       checksumUrl:
-        "https://github.com/tflins/t3code/releases/download/tflins-v0.1.8-nightly.20261110.4400-tflins.1/SHA256SUMS",
+        "https://github.com/tflins/fl-code/releases/download/tflins-v0.1.8-nightly.20261110.4400-tflins.1/SHA256SUMS",
       zipSize: 1234,
     });
   });

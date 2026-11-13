@@ -2,6 +2,9 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Layer from "effect/Layer";
@@ -22,9 +25,69 @@ vi.mock(import("./DesktopUpdateProgress.ts"), { spy: true });
 vi.mock(import("./forkMacUpdater.ts"), { spy: true });
 vi.mock(import("../app/macAppBundlePath.ts"), { spy: true });
 
+it.effect(
+  "waits for renderer readiness before cleaning update files without blocking readiness",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const checked = yield* Deferred.make<void>();
+        const cleaning = Promise.withResolvers<void>();
+        const releaseCleanup = Promise.withResolvers<void>();
+        let cleanupFinished = false;
+        using cleanup = vi.spyOn(MacUpdater, "cleanupMacUpdates").mockImplementation(() => {
+          cleaning.resolve();
+          return releaseCleanup.promise.then(() => {
+            cleanupFinished = true;
+          });
+        });
+        using _bundle = vi
+          .spyOn(MacAppBundlePath, "macAppBundlePath")
+          .mockReturnValue("/fixture/FL Code.app");
+        const services = Layer.mergeAll(
+          DesktopEnvironment.layer({
+            dirname: "/fixture/dist-electron",
+            homeDirectory: "/fixture/home",
+            platform: "darwin",
+            processArch: "arm64",
+            isPackaged: true,
+            appVersion: "1.2.3-tflins.7",
+            appPath: "/fixture/FL Code.app",
+            resourcesPath: "/fixture/resources",
+            runningUnderArm64Translation: false,
+          }).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({})))),
+          Layer.mock(ElectronApp.ElectronApp, {}),
+          Layer.mock(ElectronDialog.ElectronDialog, {}),
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) =>
+              Deferred.succeed(checked, undefined).pipe(
+                Effect.as(HttpClientResponse.fromWeb(request, Response.json([]))),
+              ),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const updates = yield* DesktopReleaseUpdates.DesktopReleaseUpdates;
+          const listener = yield* updates.listen.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* TestClock.adjust("15 seconds");
+          yield* Deferred.await(checked);
+          assert.equal(cleanup.mock.calls.length, 0);
+          yield* updates.confirmStartup;
+          yield* Effect.promise(() => cleaning.promise);
+          assert.isFalse(cleanupFinished);
+          yield* updates.confirmStartup;
+          assert.equal(cleanup.mock.calls.length, 1);
+          releaseCleanup.resolve();
+          yield* Fiber.interrupt(listener);
+        }).pipe(Effect.provide(DesktopReleaseUpdates.layer.pipe(Layer.provide(services))));
+      }),
+    ),
+);
+
 it.effect("follows GitHub release asset redirects", () =>
   Effect.gen(function* () {
-    const sourceUrl = "https://github.com/tflins/t3code/releases/download/tflins-v0.1.8/SHA256SUMS";
+    const sourceUrl =
+      "https://github.com/tflins/fl-code/releases/download/tflins-v0.1.8/SHA256SUMS";
     const redirectUrl = "https://release-assets.githubusercontent.com/SHA256SUMS";
     const requestedUrls: string[] = [];
     const client = DesktopReleaseUpdates.followReleaseRedirects(
@@ -54,7 +117,7 @@ it.effect.each(["success", "checksum HTTP failure", "checksum body failure"] as 
   (outcome) =>
     Effect.gen(function* () {
       const version = "0.1.9-nightly.20261110.4452-tflins.4";
-      const releaseUrl = `https://github.com/tflins/t3code/releases/download/tflins-v${version}`;
+      const releaseUrl = `https://github.com/tflins/fl-code/releases/download/tflins-v${version}`;
       const checksumUrl = `${releaseUrl}/SHA256SUMS`;
       const zipName = `T3-Code-${version}-arm64.zip`;
       const zipUrl = `${releaseUrl}/${zipName}`;
