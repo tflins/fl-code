@@ -290,12 +290,15 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       liveGenerationSpeed: initialReading.presentation,
     }));
   }
-  const resetLiveGeneration = Effect.gen(function* () {
-    liveTracker.reset();
-    yield* SubscriptionRef.update(state, (current) =>
-      current.liveGenerationSpeed === null ? current : { ...current, liveGenerationSpeed: null },
-    );
-  });
+  const resetLiveGeneration = Effect.fn("EnvironmentThreadState.resetLiveGeneration")(
+    function* (options?: { readonly preserveReading?: boolean }) {
+      liveTracker.reset(options);
+      if (options?.preserveReading === true) return;
+      yield* SubscriptionRef.update(state, (current) =>
+        current.liveGenerationSpeed === null ? current : { ...current, liveGenerationSpeed: null },
+      );
+    },
+  );
   // Save only completed data/cursor updates. A canceled scope must not cache
   // a cursor whose event has not reached the data yet.
   const announceRequests = makeThreadRequestsResolvedAnnouncer(environmentId, threadId);
@@ -417,24 +420,22 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         },
   );
   const setDisconnected = Effect.gen(function* () {
-    yield* resetLiveGeneration;
+    yield* resetLiveGeneration({ preserveReading: true });
     yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.update(state, (current) => ({
       ...current,
       status: current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
-      liveGenerationSpeed: null,
     }));
   });
   const setStreamError = (message: string) =>
     Ref.set(awaitingCompletion, false).pipe(
-      Effect.andThen(resetLiveGeneration),
+      Effect.andThen(resetLiveGeneration({ preserveReading: true })),
       Effect.andThen(
         SubscriptionRef.update(state, (current) => ({
           ...current,
           status:
             current.status === "deleted" ? current.status : statusWithoutLiveData(current.data),
           error: Option.some(message),
-          liveGenerationSpeed: null,
         })),
       ),
     );
@@ -446,7 +447,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
       readonly history?: ThreadHistoryMeta;
     },
   ) {
-    yield* resetLiveGeneration;
+    yield* resetLiveGeneration({ preserveReading: true });
     const reading = liveTracker.observeBatch([], thread).presentation;
     const waiting = yield* Ref.get(awaitingCompletion);
     const sequence = yield* SubscriptionRef.get(lastSequence);
@@ -497,7 +498,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
     }));
 
   const setDeleted = Effect.fn("EnvironmentThreadState.setDeleted")(function* () {
-    yield* resetLiveGeneration;
+    yield* resetLiveGeneration();
     yield* Ref.set(awaitingCompletion, false);
     yield* SubscriptionRef.set(state, {
       data: Option.none(),
@@ -1018,7 +1019,7 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         // Foreground wakeups resubscribe; catch-up batches after that are not live output.
-        yield* resetLiveGeneration;
+        yield* resetLiveGeneration({ preserveReading: true });
         const config = yield* Effect.option(session.initialConfig);
         yield* Ref.set(awaitingCompletion, true);
         yield* markSynchronizing;

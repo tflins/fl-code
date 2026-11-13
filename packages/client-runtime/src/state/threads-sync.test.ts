@@ -2763,14 +2763,17 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
-
-      yield* Queue.offer(harness.wakeups, "application-active");
-      const resumed = yield* awaitThreadState(
+      const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.liveGenerationSpeed !== null,
       );
-      expect(resumed.liveGenerationSpeed).toBeNull();
+      yield* Queue.offer(harness.wakeups, "application-active");
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 2),
+        Stream.runHead,
+      );
+      const resumed = yield* SubscriptionRef.get(harness.threadState);
+      expect(resumed.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
@@ -2862,7 +2865,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("retains the reading on completion and resets it for a replacement snapshot", () =>
+  it.effect("retains the reading on completion and through a replacement snapshot", () =>
     Effect.gen(function* () {
       const completed = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(completed.inputs, [
@@ -2916,13 +2919,20 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed !== null);
+      const live = yield* awaitThreadState(
+        snapshotted.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
       yield* Queue.offer(snapshotted.inputs, snapshot(BASE_PROJECTION, 20));
-      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed === null);
+      const restored = yield* awaitThreadState(
+        snapshotted.observed,
+        (value) => value.sequence === 20,
+      );
+      expect(restored.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
-  it.effect("clears the live reading when the event stream fails", () =>
+  it.effect("retains the reading through disconnect, reconnect and stream failure", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
       yield* Queue.offer(harness.inputs, synchronized());
@@ -2948,13 +2958,40 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
-
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
+      yield* SubscriptionRef.set(harness.supervisorState, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "offline" as const,
+      });
+      yield* SubscriptionRef.set(harness.supervisorSession, Option.none());
+      const disconnected = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "cached",
+      );
+      expect(disconnected.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
+      yield* SubscriptionRef.set(harness.supervisorState, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected" as const,
+      });
+      yield* harness.replaceSession;
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 2),
+        Stream.runHead,
+      );
+      yield* Queue.offer(harness.inputs, synchronized());
+      const reconnected = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(reconnected.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
       yield* Queue.offer(harness.inputs, new Error("stream failed"));
       const failed = yield* awaitThreadState(harness.observed, (value) =>
         Option.isSome(value.error),
       );
-      expect(failed.liveGenerationSpeed).toBeNull();
+      expect(failed.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 

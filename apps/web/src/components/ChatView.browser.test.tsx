@@ -460,8 +460,8 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
   await act(async () => {
     for (const [milliseconds, text] of [
       [0, "Streaming"],
-      [400, "Streaming an answer"],
-      [800, "Streaming an answer with more text"],
+      [1_200, "Streaming an answer"],
+      [2_400, "Streaming an answer with more text"],
     ] as const) {
       await emitThreadEvent(thread.id, {
         type: "message.updated",
@@ -492,14 +492,14 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "turn-item.updated",
-      occurredAt: at(900),
+      occurredAt: at(2_500),
       payload: {
         ...item,
         text: "Streaming an answer with more text",
         streaming: false,
         status: "completed",
-        completedAt: at(900),
-        updatedAt: at(900),
+        completedAt: at(2_500),
+        updatedAt: at(2_500),
       },
     });
   });
@@ -507,11 +507,11 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "provider-turn.updated",
-      occurredAt: at(1_000),
+      occurredAt: at(3_000),
       payload: {
         ...providerTurn,
         status: "completed",
-        completedAt: at(1_000),
+        completedAt: at(3_000),
         throughputEstimate: {
           basis: "turn_wall_minus_known_waits",
           outputTokens: 120,

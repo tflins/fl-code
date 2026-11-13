@@ -18,7 +18,8 @@ import {
 const LIVE_GENERATION_WINDOW_MS = 2_000;
 const LIVE_GENERATION_PUBLISH_INTERVAL_MS = 1_000;
 const LIVE_GENERATION_MIN_SPAN_MS = 750;
-const LIVE_GENERATION_MIN_SAMPLES = 3;
+const LIVE_GENERATION_MIN_SAMPLES = 2;
+const LIVE_GENERATION_MIN_ESTIMATE_MS = 250;
 const LIVE_GENERATION_MAX_SAMPLES = 256;
 
 const GENERATING_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
@@ -37,7 +38,7 @@ export interface LiveGenerationSpeedTracker {
     events: ReadonlyArray<OrchestrationV2DomainEvent>,
     projection: OrchestrationV2ThreadProjection | null,
   ): LiveGenerationBatchResult;
-  reset(): void;
+  reset(options?: { readonly preserveReading?: boolean }): void;
 }
 
 export interface LiveGenerationBatchResult {
@@ -84,9 +85,9 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     lastEventAtMs = null;
   };
 
-  const reset = () => {
+  const reset: LiveGenerationSpeedTracker["reset"] = (options) => {
     scopeKey = null;
-    published = null;
+    if (options?.preserveReading !== true) published = null;
     clearWindow();
   };
 
@@ -129,7 +130,9 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
       rebaseline(eventTimeMs);
       if (published === null && item.startedAt !== null) {
         const durationMs = eventTimeMs - DateTime.toEpochMillis(item.startedAt);
-        published = presentLiveWindow(tokens, durationMs);
+        if (durationMs >= LIVE_GENERATION_MIN_ESTIMATE_MS) {
+          published = presentLiveWindow(tokens, durationMs);
+        }
         if (published !== null) publishedAtMs = eventTimeMs;
       }
       return false;
@@ -342,10 +345,11 @@ function presentCompletedMessage(
     item.completedAt === null
   )
     return null;
-  return presentLiveWindow(
-    estimateVisibleTextTokens(item.text),
-    DateTime.toEpochMillis(item.completedAt) - DateTime.toEpochMillis(item.startedAt),
-  );
+  const durationMs =
+    DateTime.toEpochMillis(item.completedAt) - DateTime.toEpochMillis(item.startedAt);
+  return durationMs < LIVE_GENERATION_MIN_ESTIMATE_MS
+    ? null
+    : presentLiveWindow(estimateVisibleTextTokens(item.text), durationMs);
 }
 
 function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScope | null {
