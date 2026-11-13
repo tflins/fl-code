@@ -571,6 +571,10 @@
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
     },
+    "./decision-presentation": {
+      "types": "./src/decisionPresentation.ts",
+      "default": "./src/decisionPresentation.ts"
+    },
     "./decision-submission": {
       "types": "./src/decisionSubmission.ts",
       "default": "./src/decisionSubmission.ts"

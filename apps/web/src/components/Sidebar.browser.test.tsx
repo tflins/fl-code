@@ -3,10 +3,12 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   ProjectId,
+  RunId,
   ThreadId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -16,7 +18,12 @@ import { makeThreadFixture } from "../test-fixtures";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
-import { useProjects, useQuietThreadShells } from "../state/entities";
+import {
+  useProjects,
+  useQuietThreadShell,
+  useQuietThreadShells,
+  useThreadShell,
+} from "../state/entities";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
@@ -120,6 +127,72 @@ function threadShell(projectId: ProjectId, index: number): EnvironmentThreadShel
     title: `Thread ${index}`,
   });
 }
+
+it.each([false, true])(
+  "keeps AI completion distinct from a pending decision, boring=%s",
+  async (boring) => {
+    using stack = new DisposableStack();
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled: boring });
+    const activeProject = project("decision-project");
+    const source = makeThreadFixture({
+      environmentId: activeProject.environmentId,
+      projectId: activeProject.id,
+      id: ThreadId.make("execution-task"),
+      title: "Execution task",
+    });
+    const now = "2026-11-13T00:00:00.000Z";
+    const decision = makeThreadFixture({
+      ...source,
+      id: ThreadId.make("decision-task"),
+      title: "Retention policy",
+      lastVisitedAt: "2026-11-12T00:00:00.000Z",
+      latestRun: {
+        runId: RunId.make("decision-reply"),
+        status: "completed",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        assistantMessageId: null,
+      },
+      decision: {
+        sourceThreadId: source.id,
+        question: "How long should records be kept?",
+        status: "discussing",
+        revision: 1,
+        createdAt: DateTime.makeUnsafe(now),
+        updatedAt: DateTime.makeUnsafe(now),
+      },
+    });
+    vi.mocked(useProjects).mockReturnValue([activeProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue([source, decision]);
+    vi.mocked(useQuietThreadShell).mockImplementation((ref) =>
+      ref?.threadId === source.id ? source : null,
+    );
+    vi.mocked(useThreadShell).mockReturnValue(null);
+    vi.mocked(useThreadRouteTarget).mockReturnValue(null);
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: { environmentId: source.environmentId, projectId: source.projectId },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef: null,
+    });
+    await using screen = await render(
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+    await expect.element(screen.getByText("Awaiting you", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("AI replied", { exact: true })).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Open source task: Execution task" }))
+      .toBeVisible();
+  },
+);
 
 describe("sidebar render isolation", () => {
   // regression: #33100 Cmd+J re-rendered every sidebar row, which took hundreds of ms with many threads

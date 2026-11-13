@@ -1,3 +1,4 @@
+import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
 import {
   prepareDecisionSubmission,
   replaceRejectedDecisionAttempt,
@@ -45,10 +46,13 @@ export function DecisionThreadPanel(props: {
   const draft = AsyncResult.isSuccess(preferences)
     ? preferences.value.decisionDrafts?.[draftKey]
     : undefined;
+  const [expanded, setExpanded] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inFlight = useRef(false);
   const sourceDeleted = source?.deletedAt != null;
+  const handled = decision.status !== "discussing";
+  const showDetails = !handled || expanded;
 
   function saveDraft(value: typeof draft) {
     savePreferences({
@@ -146,24 +150,103 @@ export function DecisionThreadPanel(props: {
         <SymbolView
           name="bubble.left.and.bubble.right"
           size={14}
-          tintColorClassName="accent-foreground-muted"
+          tintColorClassName="accent-warning-foreground"
         />
-        <Text className="text-sm font-t3-medium">Decision</Text>
-        <Text className="flex-1 text-xs text-foreground-muted">
-          {decision.status === "discussing"
-            ? "Awaiting your decision"
-            : decision.status === "completed"
-              ? "Returned to source task"
-              : "Cancelled without an answer"}
+        <Text className="text-sm font-t3-medium text-warning-foreground">Decision</Text>
+        <Text className="text-xs font-t3-medium">{decisionStatusLabels[decision.status]}</Text>
+        <Text className="flex-1 text-xs text-foreground-muted" numberOfLines={1}>
+          {!showDetails ? decision.question : null}
         </Text>
+        {handled ? (
+          <Button
+            label={showDetails ? "Hide details" : "Details"}
+            tone="text"
+            size="compact"
+            onPress={() => setExpanded(!expanded)}
+          />
+        ) : null}
       </View>
-      <Button
-        label={source?.title ?? "Open source task"}
-        tone="text"
-        size="compact"
-        onPress={() => openSource(sourceRef)}
-      />
-      <Text className="text-sm">{decision.question}</Text>
+      {showDetails ? (
+        <View className="gap-2">
+          <Button
+            label={`Source: ${source?.title ?? "Open source task"}`}
+            tone="text"
+            size="compact"
+            onPress={() => openSource(sourceRef)}
+          />
+          <Text className="text-sm">{decision.question}</Text>
+          {decision.finalAnswer && decision.status !== "completed" ? (
+            <Text className="text-sm text-foreground-muted">
+              Previously confirmed: {decision.finalAnswer}
+            </Text>
+          ) : null}
+          {decision.status === "discussing" ? (
+            <>
+              <Text className="text-xs text-foreground-muted">
+                Continue discussing in chat. Only the conclusion you confirm below is returned to
+                the source task.
+              </Text>
+              {decision.options?.length ? (
+                <View className="flex-row flex-wrap gap-2">
+                  {decision.options.map((option) => (
+                    <Button
+                      key={option}
+                      label={option}
+                      size="compact"
+                      disabled={pending || !canConfirm || sourceDeleted}
+                      onPress={() => void submit("confirm", option)}
+                    />
+                  ))}
+                </View>
+              ) : null}
+              <TextInput
+                accessibilityLabel="Final decision"
+                placeholder="Write the conclusion to return…"
+                multiline
+                numberOfLines={3}
+                value={draft?.answer ?? ""}
+                editable={!pending && canConfirm}
+                onChangeText={(answer) =>
+                  saveDraft({ commandId: CommandId.make(uuidv4()), answer })
+                }
+              />
+              <View className="flex-row flex-wrap gap-2">
+                <Button
+                  label="Confirm and return"
+                  size="compact"
+                  tone="primary"
+                  loading={pending}
+                  disabled={!canConfirm || !draft?.answer.trim() || sourceDeleted}
+                  onPress={() => void submit("confirm")}
+                />
+                <Button
+                  label="Cancel decision"
+                  size="compact"
+                  tone="text"
+                  disabled={pending || !canCancel}
+                  onPress={() => void submit("cancel")}
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              {decision.finalAnswer && decision.status === "completed" ? (
+                <Text className="text-sm">{decision.finalAnswer}</Text>
+              ) : null}
+              <Text className="text-xs text-foreground-muted">
+                This decision is closed. Reopen to revise it with the existing discussion. For a
+                different issue, ask the source task to open a new decision.
+              </Text>
+              <Button
+                label="Reopen discussion"
+                size="compact"
+                disabled={pending || !canReopen}
+                onPress={() => void submit("reopen")}
+              />
+            </>
+          )}
+        </View>
+      ) : null}
       {sourceDeleted ? (
         <Text accessibilityRole="alert" className="text-sm text-danger">
           The source task was deleted. Your discussion is still available.
@@ -174,68 +257,6 @@ export function DecisionThreadPanel(props: {
           The source task could not be notified of this cancellation.
         </Text>
       ) : null}
-      {decision.finalAnswer && decision.status !== "completed" ? (
-        <Text className="text-sm text-foreground-muted">
-          Previously confirmed: {decision.finalAnswer}
-        </Text>
-      ) : null}
-      {decision.status === "discussing" ? (
-        <>
-          <Text className="text-xs text-foreground-muted">
-            Continue discussing in chat. Only the conclusion you confirm below is returned to the
-            source task.
-          </Text>
-          {decision.options?.length ? (
-            <View className="flex-row flex-wrap gap-2">
-              {decision.options.map((option) => (
-                <Button
-                  key={option}
-                  label={option}
-                  size="compact"
-                  disabled={pending || !canConfirm || sourceDeleted}
-                  onPress={() => void submit("confirm", option)}
-                />
-              ))}
-            </View>
-          ) : null}
-          <TextInput
-            accessibilityLabel="Final decision"
-            placeholder="Write the conclusion to return…"
-            multiline
-            numberOfLines={3}
-            value={draft?.answer ?? ""}
-            editable={!pending && canConfirm}
-            onChangeText={(answer) => saveDraft({ commandId: CommandId.make(uuidv4()), answer })}
-          />
-          <View className="flex-row flex-wrap gap-2">
-            <Button
-              label="Confirm and return"
-              size="compact"
-              tone="primary"
-              loading={pending}
-              disabled={!canConfirm || !draft?.answer.trim() || sourceDeleted}
-              onPress={() => void submit("confirm")}
-            />
-            <Button
-              label="Cancel decision"
-              size="compact"
-              tone="text"
-              disabled={pending || !canCancel}
-              onPress={() => void submit("cancel")}
-            />
-          </View>
-        </>
-      ) : (
-        <>
-          {decision.finalAnswer ? <Text className="text-sm">{decision.finalAnswer}</Text> : null}
-          <Button
-            label="Reopen discussion"
-            size="compact"
-            disabled={pending || !canReopen}
-            onPress={() => void submit("reopen")}
-          />
-        </>
-      )}
       {error ? (
         <Text accessibilityRole="alert" className="text-sm text-danger">
           {error}

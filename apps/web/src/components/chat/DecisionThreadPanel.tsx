@@ -1,3 +1,4 @@
+import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
 import {
   DecisionDraft,
   prepareDecisionSubmission,
@@ -46,10 +47,13 @@ export function DecisionThreadPanel(props: {
     null,
     NullableDecisionDraft,
   );
+  const [expanded, setExpanded] = useState(false);
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const sourceDeleted = source?.deletedAt != null;
+  const handled = decision.status !== "discussing";
+  const showDetails = !handled || expanded;
 
   async function submit(action: DecisionAction, selectedAnswer?: string) {
     if (inFlight.current) return;
@@ -129,26 +133,115 @@ export function DecisionThreadPanel(props: {
 
   return (
     <section aria-label="Decision" className="chat-content-lane my-3">
-      <div className="rounded-xl border border-border bg-muted/20 p-3">
-        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <MessagesSquareIcon aria-hidden className="size-4" />
-          <span className="font-medium text-foreground">Decision</span>
-          <span>
-            {decision.status === "discussing"
-              ? "Awaiting your decision"
-              : decision.status === "completed"
-                ? "Returned to source task"
-                : "Cancelled without an answer"}
+      <div
+        className={`rounded-lg border p-2.5 ${handled ? "border-border bg-muted/20" : "border-warning-foreground/25 bg-warning-foreground/5"}`}
+      >
+        <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+          <MessagesSquareIcon aria-hidden className="size-4 shrink-0 text-warning-foreground" />
+          <span className="font-medium text-warning-foreground">Decision</span>
+          <span className="shrink-0 font-medium text-foreground">
+            {decisionStatusLabels[decision.status]}
           </span>
-          <Link
-            to="/$environmentId/$threadId"
-            params={buildThreadRouteParams(sourceRef)}
-            className="min-w-0 truncate underline underline-offset-2"
-          >
-            {source?.title ?? "Open source task"}
-          </Link>
+          <span className="min-w-0 flex-1 truncate">{!showDetails ? decision.question : null}</span>
+          {handled ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-expanded={showDetails}
+              onClick={() => setExpanded(!expanded)}
+            >
+              {showDetails ? "Hide details" : "Details"}
+            </Button>
+          ) : null}
         </div>
-        <p className="my-2 text-sm whitespace-pre-wrap">{decision.question}</p>
+        {showDetails ? (
+          <>
+            <Link
+              to="/$environmentId/$threadId"
+              params={buildThreadRouteParams(sourceRef)}
+              className="mt-2 block truncate text-xs underline underline-offset-2"
+            >
+              Source: {source?.title ?? "Open source task"}
+            </Link>
+            <p className="my-2 text-sm whitespace-pre-wrap">{decision.question}</p>
+            {decision.finalAnswer && decision.status !== "completed" ? (
+              <p className="mb-2 text-sm text-muted-foreground">
+                Previously confirmed: {decision.finalAnswer}
+              </p>
+            ) : null}
+            {decision.status === "discussing" ? (
+              <>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Continue discussing in chat. Only the conclusion you confirm below is returned to
+                  the source task.
+                </p>
+                {decision.options?.length ? (
+                  <div className="mb-2 flex flex-wrap gap-2">
+                    {decision.options.map((option) => (
+                      <Button
+                        key={option}
+                        size="sm"
+                        variant="outline"
+                        disabled={pending || !canConfirm || sourceDeleted}
+                        onClick={() => void submit("confirm", option)}
+                      >
+                        {option}
+                      </Button>
+                    ))}
+                  </div>
+                ) : null}
+                <Textarea
+                  aria-label="Final decision"
+                  placeholder="Write the conclusion to return…"
+                  rows={3}
+                  value={draft?.answer ?? ""}
+                  disabled={pending || !canConfirm}
+                  onChange={(event) =>
+                    setDraft({
+                      commandId: CommandId.make(randomUUID()),
+                      answer: event.target.value,
+                    })
+                  }
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    disabled={pending || !canConfirm || !draft?.answer.trim() || sourceDeleted}
+                    onClick={() => void submit("confirm")}
+                  >
+                    {pending ? "Saving…" : "Confirm and return"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={pending || !canCancel}
+                    onClick={() => void submit("cancel")}
+                  >
+                    Cancel decision
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                {decision.finalAnswer && decision.status === "completed" ? (
+                  <p className="mb-2 text-sm whitespace-pre-wrap">{decision.finalAnswer}</p>
+                ) : null}
+                <p className="my-2 text-xs text-muted-foreground">
+                  This decision is closed. Reopen to revise it with the existing discussion. For a
+                  different issue, ask the source task to open a new decision.
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={pending || !canReopen}
+                  onClick={() => void submit("reopen")}
+                >
+                  Reopen discussion
+                </Button>
+              </>
+            )}
+          </>
+        ) : null}
         {sourceDeleted ? (
           <p role="alert" className="my-2 text-sm text-destructive">
             The source task was deleted. Your discussion is still available.
@@ -159,75 +252,6 @@ export function DecisionThreadPanel(props: {
             The source task could not be notified of this cancellation.
           </p>
         ) : null}
-        {decision.finalAnswer && decision.status !== "completed" ? (
-          <p className="mb-2 text-sm text-muted-foreground">
-            Previously confirmed: {decision.finalAnswer}
-          </p>
-        ) : null}
-        {decision.status === "discussing" ? (
-          <>
-            <p className="mb-2 text-xs text-muted-foreground">
-              Continue discussing in chat. Only the conclusion you confirm below is returned to the
-              source task.
-            </p>
-            {decision.options?.length ? (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {decision.options.map((option) => (
-                  <Button
-                    key={option}
-                    size="sm"
-                    variant="outline"
-                    disabled={pending || !canConfirm || sourceDeleted}
-                    onClick={() => void submit("confirm", option)}
-                  >
-                    {option}
-                  </Button>
-                ))}
-              </div>
-            ) : null}
-            <Textarea
-              aria-label="Final decision"
-              placeholder="Write the conclusion to return…"
-              rows={3}
-              value={draft?.answer ?? ""}
-              disabled={pending || !canConfirm}
-              onChange={(event) =>
-                setDraft({ commandId: CommandId.make(randomUUID()), answer: event.target.value })
-              }
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                disabled={pending || !canConfirm || !draft?.answer.trim() || sourceDeleted}
-                onClick={() => void submit("confirm")}
-              >
-                {pending ? "Saving…" : "Confirm and return"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={pending || !canCancel}
-                onClick={() => void submit("cancel")}
-              >
-                Cancel decision
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            {decision.finalAnswer && decision.status === "completed" ? (
-              <p className="mb-2 text-sm whitespace-pre-wrap">{decision.finalAnswer}</p>
-            ) : null}
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={pending || !canReopen}
-              onClick={() => void submit("reopen")}
-            >
-              Reopen discussion
-            </Button>
-          </>
-        )}
         {error ? (
           <p role="alert" className="mt-2 text-sm text-destructive">
             {error}

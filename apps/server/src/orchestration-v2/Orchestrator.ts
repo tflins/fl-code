@@ -6314,40 +6314,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const automaticWake =
       command.notification !== undefined || command.delegatedCompletion !== undefined;
     const decision = projection.thread.decision;
-    const userReopensDecision =
-      decision !== undefined &&
-      decision.status !== "discussing" &&
-      command.createdBy === "user" &&
-      !automaticWake;
-    // Late success notices preserve completion; failures still need attention.
+    // Discussion keeps its history; reopening the decision requires an explicit user action.
     const handledDecisionStaysSettled =
       decision !== undefined &&
       decision.status !== "discussing" &&
-      !userReopensDecision &&
       command.notification?.outcome !== "failed";
-    if (
-      userReopensDecision ||
-      (projection.thread.settledOverride !== null && !handledDecisionStaysSettled)
-    ) {
+    if (projection.thread.settledOverride !== null && !handledDecisionStaysSettled) {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,
-        ...(userReopensDecision && decision !== undefined
-          ? {
-              decision: {
-                ...decision,
-                status: "discussing" as const,
-                revision: decision.revision + 1,
-                completedAt: null,
-                cancelledAt: null,
-                updatedAt: now,
-              },
-            }
-          : {}),
         settledOverride: null,
         settledAt: null,
         unsettledAt:
-          projection.thread.settledOverride === "active" && !userReopensDecision
+          projection.thread.settledOverride === "active"
             ? (projection.thread.unsettledAt ?? null)
             : now,
         updatedAt: now,

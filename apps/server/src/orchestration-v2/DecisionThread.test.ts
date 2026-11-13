@@ -491,6 +491,63 @@ it.effect("cancels without an answer and leaves the active source running", () =
         );
         assert.equal(decision.thread.decision?.status, "cancelled");
         assert.equal(decision.thread.settledOverride, "settled");
+        yield* orchestrator.dispatch({
+          type: "decision.cancel",
+          commandId: CommandId.make("cancel:decision"),
+          threadId: decisionThreadId,
+          expectedRevision: 1,
+        });
+        const stale = yield* orchestrator
+          .dispatch({
+            type: "decision.cancel",
+            commandId: CommandId.make("cancel:another-client"),
+            threadId: decisionThreadId,
+            expectedRevision: 1,
+          })
+          .pipe(Effect.flip);
+        assert.equal(stale._tag, "OrchestratorDispatchError");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("cancel:follow-up"),
+          threadId: decisionThreadId,
+          messageId: MessageId.make("message:cancel-follow-up"),
+          text: "Thanks for the explanation.",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        const afterChat = yield* orchestrator.getThreadProjection(decisionThreadId);
+        assert.equal(afterChat.thread.decision?.status, "cancelled");
+        assert.equal(afterChat.thread.decision?.revision, 2);
+        assert.equal(afterChat.thread.settledOverride, "settled");
+        const cancellationMessages = (yield* orchestrator.getThreadProjection(
+          sourceThreadId,
+        )).messages.filter((message) =>
+          message.id.startsWith(`decision-cancel:${decisionThreadId}:`),
+        );
+        assert.equal(cancellationMessages.length, 1);
+        yield* orchestrator.dispatch({
+          type: "decision.reopen",
+          commandId: CommandId.make("cancel:reopen"),
+          threadId: decisionThreadId,
+          expectedRevision: 2,
+        });
+        yield* orchestrator.dispatch({
+          type: "decision.cancel",
+          commandId: CommandId.make("cancel:new-cycle"),
+          threadId: decisionThreadId,
+          expectedRevision: 3,
+        });
+        yield* worker.drain();
+        const laterMessages = (yield* orchestrator.getThreadProjection(
+          sourceThreadId,
+        )).messages.filter((message) =>
+          message.id.startsWith(`decision-cancel:${decisionThreadId}:`),
+        );
+        assert.equal(laterMessages.length, 2);
+        assert.notEqual(laterMessages[0]!.id, laterMessages[1]!.id);
       }).pipe(Effect.provide(layer));
     }),
   ),
@@ -700,7 +757,7 @@ it.effect("reopens for a correction and an old revision cannot overwrite it", ()
   ),
 );
 
-it.effect("does not reopen a handled decision for a late agent notice but does for the user", () =>
+it.effect("keeps handled decisions closed until explicitly reopened and exposes failures", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { cwd, layer } = yield* makeHarness("decision-late-notice");
@@ -780,9 +837,19 @@ it.effect("does not reopen a handled decision for a late agent notice but does f
         });
         yield* worker.drain();
         const afterUser = yield* orchestrator.getThreadProjection(decisionThreadId);
-        assert.equal(afterUser.thread.decision?.status, "discussing");
-        assert.equal(afterUser.thread.decision?.revision, 3);
-        assert.isNull(afterUser.thread.settledOverride);
+        assert.equal(afterUser.thread.decision?.status, "completed");
+        assert.equal(afterUser.thread.decision?.revision, 2);
+        assert.equal(afterUser.thread.decision?.finalAnswer, "Use the bounded cache.");
+        yield* orchestrator.dispatch({
+          type: "decision.reopen",
+          commandId: CommandId.make("explicit-reopen"),
+          threadId: decisionThreadId,
+          expectedRevision: 2,
+        });
+        const reopened = yield* orchestrator.getThreadProjection(decisionThreadId);
+        assert.equal(reopened.thread.decision?.status, "discussing");
+        assert.equal(reopened.thread.decision?.revision, 3);
+        assert.isNull(reopened.thread.settledOverride);
       }).pipe(Effect.provide(layer));
     }),
   ),
