@@ -1,10 +1,24 @@
+# FL Code
+
+<p align="center"><img src="./assets/fork/fl-code-nightly-macos-1024.png" width="96" height="96" alt="FL Code logo" /></p>
+
+FL Code 是基于 [T3 Code](https://github.com/pingdotgg/t3code) 独立维护的定制版，提供 macOS Apple Silicon Nightly 安装包、独立自更新、输出速度显示和子 Agent 交接记录，并持续合入上游已发布的 Nightly 更新。
+
+- [下载 FL Code Nightly](https://github.com/tflins/fl-code/releases)
+- [定制版发布与更新](./docs/operations/fork-release.md)
+- [上游 T3 Code](https://github.com/pingdotgg/t3code)
+
+官方 npm、移动端和软件包安装渠道属于上游项目。
+
+---
+
 <p align="center">
   <a href="https://t3.codes">
     <img src="./assets/prod/t3-black-web-icon-192x192.png" width="80" height="80" alt="T3 Code logo" />
   </a>
 </p>
 
-<h1 align="center">T3 Code</h1>
+<h2 align="center">T3 Code · 上游项目</h2>
 
 <p align="center">The open-source control plane for coding agents.</p>
 

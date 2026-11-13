@@ -1,7 +1,7 @@
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
-export const FORK_RELEASE_REPOSITORY = "tflins/t3code";
+export const FORK_RELEASE_REPOSITORY = "tflins/fl-code";
 const FORK_RELEASE_TAG_PREFIX = "tflins-v";
 
 export const GitHubReleaseAsset = Schema.Struct({

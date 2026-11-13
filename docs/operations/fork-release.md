@@ -1,6 +1,6 @@
 # 定制版桌面发布
 
-`tflins/t3code` 使用自己的 `main` 维护定制内容，通过合并官方已发布的最新每夜版标签同步源码。推送或合并到自己的 `main` 自动触发 **Fork Desktop Release** 的构建验证，只保存 Actions artifacts，不创建 Release。正式发布需要手动启用 `publish`，或显式推送 `tflins-v*` 标签。该流程不触发上游的 `v*` 发布，也不发布官方 npm 包、手机 App 或云服务。
+`tflins/fl-code` 使用自己的 `main` 维护定制内容，通过合并官方已发布的最新每夜版标签同步源码。推送或合并到自己的 `main` 自动触发 **Fork Desktop Release** 的构建验证，只保存 Actions artifacts，不创建 Release。正式发布需要手动启用 `publish`，或显式推送 `tflins-v*` 标签。该流程不触发上游的 `v*` 发布，也不发布官方 npm 包、手机 App 或云服务。
 
 ## 版本与发布
 
@@ -10,7 +10,7 @@
 
 不使用 `apps/desktop/package.json` 的静态版本推断每夜版版本：上游源码可能仍记录上一个稳定版。版本由工作流传入现有打包脚本，构建期间对齐服务端、桌面端和 Web，应用名称及图标使用上游 Nightly 配置。Release 标记为预发布，已经公开的同名版本不覆盖。
 
-首次启用需将工作流和对应代码提交、推送到 `tflins/t3code` 的 `main`，并在该 fork 的 Actions 页面启用工作流。主线推送会构建用源码提交标识的验证包，但不会占发布版本，也不会创建 Release。日常变更先推送主线并完成本地与 Actions 验证：
+首次启用需将工作流和对应代码提交、推送到 `tflins/fl-code` 的 `main`，并在该 fork 的 Actions 页面启用工作流。主线推送会构建用源码提交标识的验证包，但不会占发布版本，也不会创建 Release。日常变更先推送主线并完成本地与 Actions 验证：
 
 ```bash
 vp run check:changed
@@ -22,6 +22,8 @@ git push origin main
 手动运行时可以指定已存在的标签进行复验；`tag` 为空且未勾选 `publish` 只构建验证包。启用 `publish` 后，空标签会生成下一个连续版本，显式标签则只发布该标签。`tflins-v*` 标签推送属于显式发布入口。失败或重跑不会消耗新的版本号；若 Release 已经公开，应发布下一个版本。不要移动已经发布的标签。
 
 ## 安装与更新范围
+
+仓库已从 `tflins/t3code` 更名为 `tflins/fl-code`。旧版更新入口通过 GitHub 重定向继续访问同一仓库及 Release；不要重新创建或复用 `tflins/t3code`，否则会破坏旧版更新链路。
 
 当前流程未配置 Apple Developer ID 签名和公证，因此不启用 Electron 的签名自动更新源。`T3CODE_DESKTOP_DISABLE_UPDATE_FEED=true` 继续禁止包内 `app-update.yml`，避免把未签名构建接入官方更新通道。
 
