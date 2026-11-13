@@ -79,6 +79,28 @@ export function presentCompletedTurn(
   };
 }
 
+export function presentProviderStep(
+  turn: Pick<OrchestrationV2ProviderTurn, "status" | "tokenUsage">,
+): GenerationSpeedPresentation | null {
+  const usage = turn.tokenUsage;
+  if (
+    turn.status !== "running" ||
+    usage?.outputTokens === undefined ||
+    usage.outputDurationMs === undefined ||
+    usage.outputDurationMs < 250
+  )
+    return null;
+  const reading = presentLiveWindow(usage.outputTokens, usage.outputDurationMs);
+  if (reading === null) return null;
+  return {
+    ...reading,
+    details:
+      `Most recent provider-reported output throughput: ${formatRate(reading.tokensPerSecond)} tokens per second. ` +
+      `${usage.outputTokens.toLocaleString("en-US")} output tokens over ${(usage.outputDurationMs / 1000).toFixed(1)} seconds of the same response's observed output interval. ` +
+      "Uses reported output tokens once, including reported reasoning and tool arguments. Confirmed tool waits are excluded; buffered output updates when the response reports its usage. This is not pure decode speed.",
+  };
+}
+
 export function presentLiveWindow(
   estimatedTokens: number,
   durationMs: number,

@@ -2,6 +2,7 @@ import type {
   OrchestrationV2DomainEvent,
   OrchestrationV2Run,
   OrchestrationV2RunAttempt,
+  OrchestrationV2ProviderTurn,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ import {
   deriveGenerationSpeed,
   presentLiveWindow,
   presentCompletedTurn,
+  presentProviderStep,
   type GenerationSpeedPresentation,
 } from "./generationSpeed.ts";
 
@@ -51,6 +53,7 @@ interface LiveSample {
 }
 
 interface LiveScope {
+  readonly providerTurn: OrchestrationV2ProviderTurn;
   readonly key: string;
   readonly runId: string;
   readonly attemptId: string;
@@ -77,19 +80,25 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
   let samples: LiveSample[] = [];
   let published: GenerationSpeedPresentation | null = null;
   let publishedAtMs: number | null = null;
+  let publishedScopeKey: string | null = null;
+  let providerSampleKey: string | null = null;
   let lastEventAtMs: number | null = null;
 
   const clearWindow = () => {
     outputItems.clear();
     totalTokens = 0;
     samples = [];
-    publishedAtMs = null;
     lastEventAtMs = null;
   };
 
   const reset: LiveGenerationSpeedTracker["reset"] = (options) => {
     scopeKey = null;
-    if (options?.preserveReading !== true) published = null;
+    if (options?.preserveReading !== true) {
+      published = null;
+      publishedAtMs = null;
+      publishedScopeKey = null;
+      providerSampleKey = null;
+    }
     clearWindow();
   };
 
@@ -109,7 +118,10 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
         const startedAtMs =
           item.startedAt === null ? eventTimeMs : DateTime.toEpochMillis(item.startedAt);
         samples =
-          published === null && eventTimeMs - startedAtMs >= LIVE_GENERATION_MIN_ESTIMATE_MS
+          (published === null ||
+            publishedScopeKey !== scopeKey ||
+            (publishedAtMs !== null && startedAtMs > publishedAtMs)) &&
+          eventTimeMs - startedAtMs >= LIVE_GENERATION_MIN_ESTIMATE_MS
             ? [{ atMs: startedAtMs, tokens: previousTokens }]
             : [{ atMs: eventTimeMs, tokens: totalTokens }];
       }
@@ -164,6 +176,7 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     if (presentation === null) return;
     published = presentation;
     publishedAtMs = atMs;
+    publishedScopeKey = scopeKey;
   };
 
   const observeBatch = (
@@ -197,6 +210,18 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     if (scope.key !== scopeKey) {
       scopeKey = scope.key;
       clearWindow();
+    }
+    const usage = scope.providerTurn.tokenUsage;
+    const sampleKey = `${scope.providerTurnId}:${usage?.updatedAt}:${usage?.outputTokens}:${usage?.outputDurationMs}`;
+    if (sampleKey !== providerSampleKey) {
+      const reading = presentProviderStep(scope.providerTurn);
+      if (reading !== null) {
+        published = reading;
+        publishedScopeKey = scope.key;
+        const atMs = Date.parse(usage!.updatedAt);
+        publishedAtMs = Number.isFinite(atMs) ? atMs : null;
+        providerSampleKey = sampleKey;
+      }
     }
     for (const event of events) {
       switch (event.type) {
@@ -237,7 +262,12 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
               existing.estimator.reset();
             }
             if (published === null || existing === undefined) {
-              published = presentCompletedOutput(item) ?? published;
+              const reading = presentCompletedOutput(item);
+              if (reading !== null) {
+                published = reading;
+                publishedScopeKey = scope.key;
+                publishedAtMs = DateTime.toEpochMillis(event.occurredAt);
+              }
             }
             break;
           }
@@ -346,6 +376,7 @@ function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScop
   if (providerThread?.driver !== "codex") return null;
 
   return {
+    providerTurn,
     key: `${run.id}\u0000${attempt.id}\u0000${providerTurn.id}`,
     runId: run.id,
     attemptId: attempt.id,

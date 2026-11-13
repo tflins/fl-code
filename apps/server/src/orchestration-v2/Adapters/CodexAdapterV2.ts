@@ -21,6 +21,7 @@ import {
   endCodexThroughputModelOutput,
   endCodexThroughputWait,
   makeCodexTurnThroughputTracker,
+  takeCodexOutputStepDuration,
   type CodexTurnThroughputTracker,
 } from "./CodexTurnThroughput.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
@@ -2056,6 +2057,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }
         };
         const markSubagentUsage = (context: ActiveCodexTurnContext) => {
+          context.throughput.contaminated = true;
           const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
           if (!nativeThreadId) return;
           getCodexTurnAccumulator(
@@ -3662,16 +3664,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // Reasoning and assistant-text coalescers build these artifacts on every streamed update.
         const buildAgentMessageArtifacts = Effect.fnUntraced(function* (
           context: ActiveCodexTurnContext,
-          item: { readonly id: string; readonly text: string },
+          item: { readonly id: string; readonly text: string; readonly nativeItemId?: string },
           completed: boolean,
         ) {
           const updatedAt = yield* DateTime.now;
-          const completedAt = completed ? updatedAt : null;
+          const timing = context.throughput.modelOutputTimings.get(item.nativeItemId ?? item.id);
+          const completedAt = completed
+            ? timing?.completedAtMs === undefined
+              ? updatedAt
+              : DateTime.makeUnsafe(timing.completedAtMs)
+            : null;
           const nodeId = idAllocator.derive.nodeFromProviderItem({
             driver: CODEX_PROVIDER,
             nativeItemId: item.id,
           });
-          const { ordinal, startedAt } = yield* resolveItemPosition(context, item.id);
+          const { ordinal, startedAt } = yield* resolveItemPosition(
+            context,
+            item.id,
+            timing?.startedAtMs === undefined ? undefined : DateTime.makeUnsafe(timing.startedAtMs),
+          );
           const messageId = idAllocator.derive.messageFromProviderItem({
             driver: CODEX_PROVIDER,
             nativeItemId: item.id,
@@ -3753,7 +3764,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (context === undefined) return;
               const artifacts = yield* buildAgentMessageArtifacts(
                 context,
-                { id: update.itemId, text: update.text },
+                { id: update.itemId, text: update.text, nativeItemId: part.nativeItemId },
                 update.completed,
               );
               const interrupted = (yield* Ref.get(terminalizedNonCompletedNativeTurns)).has(
@@ -3803,7 +3814,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* completeProviderRetry(context, yield* DateTime.now);
           const itemId = reasoningPartKey(payload.turnId, payload.itemId, stream, index);
           // Reserve positions before delayed flushes so later tools stay after them.
-          yield* resolveItemOrdinal(context, itemId);
+          const startedAtMs = context.throughput.modelOutputTimings.get(
+            payload.itemId,
+          )?.startedAtMs;
+          yield* resolveItemPosition(
+            context,
+            itemId,
+            startedAtMs === undefined ? undefined : DateTime.makeUnsafe(startedAtMs),
+          );
           yield* reasoningDeltas.append({ turnId: payload.turnId, itemId, delta: payload.delta });
         });
         const completeReasoning = Effect.fn("CodexAdapterV2.completeReasoning")(function* (
@@ -4401,7 +4419,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly completed?: boolean;
         }) {
           const updatedAt = yield* DateTime.now;
-          const completedAt = input.completed === true ? updatedAt : null;
+          const completedAtMs = input.context.throughput.modelOutputTimings.get(
+            input.nativeItemId,
+          )?.completedAtMs;
+          const completedAt =
+            input.completed === true
+              ? completedAtMs === undefined
+                ? updatedAt
+                : DateTime.makeUnsafe(completedAtMs)
+              : null;
           const planId = yield* resolvePlanId(input.context, input.nativeItemId);
           const nodeId = idAllocator.derive.nodeFromProviderItem({
             driver: CODEX_PROVIDER,
@@ -4933,6 +4959,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const now = yield* DateTime.now;
+            const outputDurationMs = takeCodexOutputStepDuration(
+              context.throughput,
+              payload.tokenUsage.total.totalTokens,
+            );
             yield* emitProviderEvent({
               type: "provider_turn.updated",
               driver: CODEX_PROVIDER,
@@ -4951,10 +4981,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: "running",
                 startedAt: context.startedAt,
                 completedAt: null,
-                tokenUsage: codexProviderTurnTokenUsage(
-                  payload.tokenUsage,
-                  DateTime.formatIso(now),
-                ),
+                tokenUsage: {
+                  ...codexProviderTurnTokenUsage(payload.tokenUsage, DateTime.formatIso(now)),
+                  ...(outputDurationMs === undefined ? {} : { outputDurationMs }),
+                },
               },
             });
           }).pipe(Effect.orDie),
@@ -5287,7 +5317,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (isCodexThroughputModelOutputItem(payload.item.type)) {
-              beginCodexThroughputModelOutput(context.throughput, payload.item.id);
+              beginCodexThroughputModelOutput(
+                context.throughput,
+                payload.item.id,
+                payload.startedAtMs,
+              );
             }
             if (isCodexThroughputWaitItem(payload.item.type)) {
               beginCodexThroughputWait(
@@ -5472,7 +5506,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const { context, settled } = resolved;
 
             if (isCodexThroughputModelOutputItem(payload.item.type)) {
-              endCodexThroughputModelOutput(context.throughput, payload.item.id);
+              endCodexThroughputModelOutput(
+                context.throughput,
+                payload.item.id,
+                payload.completedAtMs,
+              );
             }
             if (isCodexThroughputWaitItem(payload.item.type)) {
               endCodexThroughputWait(

@@ -383,6 +383,95 @@ describe("live generation speed window", () => {
       assistantEvent({ id: "short", text: "你好世界".repeat(10), atMs: 700 }),
     ]);
     expect(result.presentation?.label).toBe("≈ 40 tok/s");
+
+    const restored = liveProjection();
+    const previous = assistantEvent({ id: "previous", text: "a".repeat(192), atMs: -1_000 });
+    if (previous.type !== "turn-item.updated" || previous.payload.type !== "assistant_message") {
+      throw new Error("Expected an assistant item");
+    }
+    const history = {
+      ...restored,
+      turnItems: [
+        {
+          ...previous.payload,
+          status: "completed" as const,
+          streaming: false,
+          startedAt: at(-5_000),
+          completedAt: at(-1_000),
+        },
+      ],
+    };
+    const resumed = makeLiveGenerationSpeedTracker();
+    expect(resumed.observeBatch([], history).presentation?.label).toBe("≈ 12 tok/s");
+    expect(
+      resumed.observeBatch(
+        [assistantEvent({ id: "current", text: "你好世界".repeat(10), atMs: 700 })],
+        history,
+      ).presentation?.label,
+    ).toBe("≈ 40 tok/s");
+  });
+
+  it("replaces retained text estimates with aligned provider usage for a buffered response", () => {
+    const tracker = makeLiveGenerationSpeedTracker();
+    tracker.observeBatch([assistantEvent({ id: "a", text: "a", atMs: 0 })]);
+    tracker.observeBatch([assistantEvent({ id: "a", text: "a".repeat(100), atMs: 1_000 })]);
+    const projection = liveProjection();
+    const providerTurn = {
+      ...projection.providerTurns[0]!,
+      tokenUsage: {
+        usedTokens: 1_200,
+        outputTokens: 200,
+        reasoningOutputTokens: 150,
+        outputDurationMs: 2_000,
+        updatedAt: DateTime.formatIso(at(3_000)),
+      },
+    };
+    const event: OrchestrationV2DomainEvent = {
+      id: EventId.make("provider-usage"),
+      type: "provider-turn.updated",
+      threadId: THREAD_ID,
+      occurredAt: at(3_000),
+      payload: providerTurn,
+    };
+    const measured = tracker.observeBatch([event], {
+      ...projection,
+      providerTurns: [providerTurn],
+    });
+    expect(measured.presentation?.label).toBe("≈ 100 tok/s");
+    expect(measured.presentation?.outputTokens).toBe(200);
+    expect(measured.presentation?.details).toContain("provider-reported");
+    const cold = makeLiveGenerationSpeedTracker().observeBatch([], {
+      ...projection,
+      providerTurns: [providerTurn],
+    });
+    expect(cold.presentation).toEqual(measured.presentation);
+    for (const outputDurationMs of [undefined, 0, 1, Number.NaN]) {
+      const unmeasured = {
+        ...providerTurn,
+        tokenUsage: { ...providerTurn.tokenUsage, outputDurationMs },
+      };
+      expect(
+        makeLiveGenerationSpeedTracker().observeBatch([], {
+          ...projection,
+          providerTurns: [unmeasured],
+        }).presentation,
+      ).toBeNull();
+    }
+    const active = { ...projection, providerTurns: [providerTurn] };
+    const fresh = tracker.observeBatch(
+      [
+        assistantEvent({
+          id: "next-body",
+          ordinal: 2,
+          text: "a".repeat(400),
+          atMs: 4_000,
+          startedAtMs: 3_500,
+        }),
+      ],
+      active,
+    ).presentation;
+    expect(fresh).not.toBe(measured.presentation);
+    expect(tracker.observeBatch([toolEvent(4_100)], active).presentation).toBe(fresh);
   });
 
   it("restores the previous completed throughput while a new turn is running", () => {

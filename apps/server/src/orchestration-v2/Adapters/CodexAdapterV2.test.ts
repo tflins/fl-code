@@ -2852,6 +2852,33 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 prompt: "Measure this turn.",
               }),
               ...boundaryFrames,
+              ...[
+                {
+                  method: "item/started",
+                  params: {
+                    startedAtMs: 997_000,
+                    item: { type: "reasoning", id: "step-thought", summary: [], content: [] },
+                  },
+                },
+                {
+                  method: "item/completed",
+                  params: {
+                    completedAtMs: 1_000_000,
+                    item: {
+                      type: "reasoning",
+                      id: "step-thought",
+                      summary: ["Measured output"],
+                      content: [],
+                    },
+                  },
+                },
+              ].map((event) => ({
+                type: "emit_inbound" as const,
+                frame: {
+                  method: event.method,
+                  params: { threadId: nativeThreadId, turnId: nativeTurnId, ...event.params },
+                },
+              })),
               {
                 type: "emit_inbound",
                 label: "command/started",
@@ -2944,6 +2971,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           );
           yield* harness.firstTerminal;
 
+          const responseUsage = harness.events.findLast(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.status === "running" &&
+              event.providerTurn.tokenUsage !== undefined,
+          );
+          if (responseUsage?.type !== "provider_turn.updated")
+            throw new Error("Expected response usage");
+          assert.equal(
+            responseUsage.providerTurn.tokenUsage?.outputDurationMs,
+            scenario === "clean" ? 3_000 : undefined,
+          );
           assert.isFalse(
             harness.events.some(
               (event) =>
@@ -4823,6 +4862,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           scenario,
           entries: [
             ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "emit_inbound",
+              label: "reasoning/started",
+              frame: {
+                method: "item/started",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  startedAtMs: 1_000,
+                  item: { type: "reasoning", id: "thought", summary: [], content: [] },
+                },
+              },
+            },
             ...[
               {
                 method: "item/reasoning/summaryTextDelta",
@@ -4869,6 +4921,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                           summary: ["Final summary one", "Summary two"],
                           content: ["Raw trace"],
                         },
+                        completedAtMs: 13_000,
                       },
                     },
                     {
@@ -4955,6 +5008,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           [...latest.values()].every((item) => item.runId !== null && item.providerTurnId !== null),
         );
         assert.equal(new Set([...latest.values()].map((item) => item.ordinal)).size, latest.size);
+        for (const item of latest.values()) {
+          if (item.nativeItemRef?.nativeId !== "thought") continue;
+          assert.equal(item.startedAt && DateTime.toEpochMillis(item.startedAt), 1_000);
+          if (terminalStatus === "completed") {
+            assert.equal(item.completedAt && DateTime.toEpochMillis(item.completedAt), 13_000);
+          }
+        }
         const command = harness.events.find(
           (event) =>
             event.type === "turn_item.updated" && event.turnItem.type === "command_execution",

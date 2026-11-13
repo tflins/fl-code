@@ -7,9 +7,43 @@ import {
   endCodexThroughputModelOutput,
   endCodexThroughputWait,
   makeCodexTurnThroughputTracker,
+  takeCodexOutputStepDuration,
 } from "./CodexTurnThroughput.ts";
 
 describe("Codex turn throughput estimate", () => {
+  it("pairs one response's native output interval with usage and excludes a delayed tool wait", () => {
+    const tracker = makeCodexTurnThroughputTracker();
+    beginCodexThroughputModelOutput(tracker, "reasoning", 1_000);
+    endCodexThroughputModelOutput(tracker, "reasoning", 2_000);
+    beginCodexThroughputModelOutput(tracker, "body", 2_000);
+    endCodexThroughputModelOutput(tracker, "body", 2_500);
+    beginCodexThroughputWait(tracker, "tool", 3_000);
+    endCodexThroughputWait(tracker, "tool", 30_000);
+    expect(takeCodexOutputStepDuration(tracker, 1_000)).toBe(2_000);
+    expect(takeCodexOutputStepDuration(tracker, 1_000)).toBeUndefined();
+
+    beginCodexThroughputModelOutput(tracker, "next", 31_000);
+    endCodexThroughputModelOutput(tracker, "next", 33_000);
+    expect(takeCodexOutputStepDuration(tracker, 1_000)).toBeUndefined();
+    expect(takeCodexOutputStepDuration(tracker, 2_000)).toBe(2_000);
+  });
+
+  it("rejects unmeasured, instant, open, contaminated or ambiguous response intervals", () => {
+    expect(takeCodexOutputStepDuration(makeCodexTurnThroughputTracker(), 1_000)).toBeUndefined();
+    for (const scenario of ["instant", "open", "contaminated", "ambiguous"] as const) {
+      const tracker = makeCodexTurnThroughputTracker();
+      beginCodexThroughputModelOutput(tracker, "reasoning", 1_000);
+      if (scenario !== "open")
+        endCodexThroughputModelOutput(tracker, "reasoning", scenario === "instant" ? 1_001 : 3_000);
+      if (scenario === "contaminated") tracker.contaminated = true;
+      if (scenario === "ambiguous") {
+        beginCodexThroughputWait(tracker, "tool", 3_000);
+        beginCodexThroughputModelOutput(tracker, "unattributed-next-step", 5_000);
+        endCodexThroughputModelOutput(tracker, "unattributed-next-step", 6_000);
+      }
+      expect(takeCodexOutputStepDuration(tracker, 1_000)).toBeUndefined();
+    }
+  });
   it("excludes a confirmed tool wait without growing as both spans grow", () => {
     const shortTool = makeCodexTurnThroughputTracker();
     beginCodexThroughputWait(shortTool, "tool:command", 1_000);
