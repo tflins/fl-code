@@ -19,16 +19,18 @@ import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
+  readEnvironmentServerConfigLoaded,
   useProjects,
   useQuietThreadShell,
   useQuietThreadShells,
   useThreadShell,
 } from "../state/entities";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useUiStateStore } from "../uiStateStore";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
 import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
-import { SortableThreadRow } from "./sidebar/SidebarThreadRow";
+import { SidebarSearchResultRow, SortableThreadRow } from "./sidebar/SidebarThreadRow";
 import { SidebarProvider } from "./ui/sidebar";
 
 vi.mock("../state/entities", { spy: true });
@@ -128,13 +130,24 @@ function threadShell(projectId: ProjectId, index: number): EnvironmentThreadShel
   });
 }
 
-it.each([false, true])(
-  "keeps AI completion distinct from a pending decision, boring=%s",
-  async (boring) => {
+it.each([
+  { layout: "card", state: "replied" },
+  { layout: "compact", state: "replied" },
+  { layout: "search", state: "replied" },
+  { layout: "card", state: "woke" },
+  { layout: "compact", state: "woke" },
+] as const)(
+  "keeps decision status, runtime feedback and source actions distinct: $layout $state",
+  async (scenario) => {
     using stack = new DisposableStack();
     const previousSettings = getClientSettings();
     stack.defer(() => __setClientSettingsForTests(previousSettings));
-    __setClientSettingsForTests({ ...DEFAULT_CLIENT_SETTINGS, boringSidebarEnabled: boring });
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      boringSidebarEnabled: scenario.layout === "compact",
+    });
+    const previousVisits = useUiStateStore.getState().threadLastVisitedAtById;
+    stack.defer(() => useUiStateStore.setState({ threadLastVisitedAtById: previousVisits }));
     const activeProject = project("decision-project");
     const source = makeThreadFixture({
       environmentId: activeProject.environmentId,
@@ -147,7 +160,8 @@ it.each([false, true])(
       ...source,
       id: ThreadId.make("decision-task"),
       title: "Retention policy",
-      lastVisitedAt: "2026-11-12T00:00:00.000Z",
+      lastVisitedAt: scenario.state === "woke" ? undefined : "2026-11-12T00:00:00.000Z",
+      snoozedUntil: scenario.state === "woke" ? now : null,
       latestRun: {
         runId: RunId.make("decision-reply"),
         status: "completed",
@@ -171,6 +185,7 @@ it.each([false, true])(
       ref?.threadId === source.id ? source : null,
     );
     vi.mocked(useThreadShell).mockReturnValue(null);
+    vi.mocked(readEnvironmentServerConfigLoaded).mockReturnValue(false);
     vi.mocked(useThreadRouteTarget).mockReturnValue(null);
     vi.mocked(useHandleNewThread).mockReturnValue({
       activeDraftThread: null,
@@ -181,16 +196,57 @@ it.each([false, true])(
       routeDraftId: null,
       routeThreadRef: null,
     });
+    const onSelect = vi.fn();
     await using screen = await render(
-      <SidebarProvider>
-        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
-      </SidebarProvider>,
+      scenario.layout === "search" ? (
+        <SidebarSearchResultRow
+          isSettled={false}
+          thread={decision}
+          project={null}
+          projectDisplayName={null}
+          environmentLabel={null}
+          environmentMachine="laptop"
+          providerEntryByInstanceId={new Map()}
+          isHighlighted={false}
+          isRouteActive={false}
+          resultId="decision-search-result"
+          searchMatch={null}
+          searchQuery="Retention"
+          onHighlight={() => {}}
+          onSelect={onSelect}
+          onFileDropThreads={() => {}}
+        />
+      ) : (
+        <SidebarProvider>
+          <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+        </SidebarProvider>
+      ),
     );
     await expect.element(screen.getByText("Awaiting you", { exact: true })).toBeVisible();
-    await expect.element(screen.getByText("AI replied", { exact: true })).toBeVisible();
-    await expect
-      .element(screen.getByRole("button", { name: "Open source task: Execution task" }))
-      .toBeVisible();
+    if (scenario.state === "woke") {
+      const dismiss = screen.getByRole("button", { name: "Dismiss Woke notification" });
+      await expect.element(dismiss).toBeVisible();
+      await userEvent.click(dismiss);
+      await expect.element(dismiss).not.toBeInTheDocument();
+      await expect.element(screen.getByText("Awaiting you", { exact: true })).toBeVisible();
+    } else {
+      await expect.element(screen.getByText("AI replied", { exact: true })).toBeVisible();
+    }
+    const sourceLink = screen.getByRole(scenario.layout === "search" ? "link" : "button", {
+      name: "Open source task: Execution task",
+    });
+    await expect.element(sourceLink).toBeVisible();
+    if (scenario.layout === "search") {
+      await userEvent.click(screen.getByRole("option"));
+      await userEvent.keyboard("{Enter}");
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      onSelect.mockClear();
+      await userEvent.click(sourceLink);
+      await vi.waitFor(() =>
+        expect(screen.router?.state.location.pathname).toBe("/local/execution-task"),
+      );
+      expect(onSelect).not.toHaveBeenCalled();
+    }
   },
 );
 
