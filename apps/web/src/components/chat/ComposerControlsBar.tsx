@@ -265,9 +265,7 @@ export function ComposerControlsBar(props: {
   ) : (
     <>
       {composerModelPicker}
-      {!composerControlsCollapsed && generationSpeed !== null ? (
-        <GenerationSpeedIndicator presentation={generationSpeed} />
-      ) : null}
+      <GenerationSpeedIndicator presentation={generationSpeed} />
 
       <>
         {restingBlockDefs.map((def, index) => {

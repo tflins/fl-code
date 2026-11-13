@@ -447,6 +447,7 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
     });
     await emitThreadEvent(thread.id, { type: "provider-turn.updated", payload: providerTurn });
   });
+  await expect.element(app.getByText("≈ … tok/s", { exact: true })).toBeVisible();
   const item = {
     ...assistantItem(thread.id, run.id, "throughput-answer", 3, ""),
     providerThreadId,
@@ -468,7 +469,23 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
       });
     }
   });
-  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).toBeVisible();
+  await expect.element(app.getByText(/^≈ [\d.]+ tok\/s$/)).toBeVisible();
+  const liveLabel = app.getByText(/^≈ [\d.]+ tok\/s$/).element().textContent!;
+  await act(async () => {
+    await emitThreadEvent(thread.id, {
+      type: "turn-item.updated",
+      occurredAt: at(900),
+      payload: {
+        ...item,
+        text: "Streaming an answer with more text",
+        streaming: false,
+        status: "completed",
+        completedAt: at(900),
+        updatedAt: at(900),
+      },
+    });
+  });
+  await expect.element(app.getByText(liveLabel, { exact: true })).toBeVisible();
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "provider-turn.updated",
@@ -492,6 +509,15 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
       },
     });
   });
-  await expect.element(app.getByText("Avg ≈ 120 tok/s", { exact: true })).toBeVisible();
-  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).not.toBeInTheDocument();
+  await expect.element(app.getByText("≈ 120 tok/s", { exact: true })).toBeVisible();
+  await act(async () => {
+    await emitThreadEvent(thread.id, {
+      type: "run.created",
+      payload: {
+        ...runningRun(thread.id, "throughput-next", 3, "throughput-next-user"),
+        activeAttemptId: RunAttemptId.make("throughput-next-attempt"),
+      },
+    });
+  });
+  await expect.element(app.getByText("≈ 120 tok/s", { exact: true })).toBeVisible();
 });

@@ -2595,14 +2595,14 @@ describe("EnvironmentThreads", () => {
         );
         expect(live.liveGenerationSpeed).toMatchObject({
           kind: "live",
-          label: "Live ≈ 0.9 tok/s",
+          label: "≈ 0.9 tok/s",
           durationMs: 800,
         });
         expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(0.75, 10);
       }),
   );
 
-  it.effect("ignores completed snapshots and clears on provider-turn termination", () =>
+  it.effect("retains the last reading after assistant or provider completion", () =>
     Effect.gen(function* () {
       const completedSnapshot = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(completedSnapshot.inputs, [
@@ -2640,10 +2640,11 @@ describe("EnvironmentThreads", () => {
           streaming: false,
         }),
       );
-      yield* awaitThreadState(
+      const completed = yield* awaitThreadState(
         completedSnapshot.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.sequence === liveSequence(8),
       );
+      expect(completed.liveGenerationSpeed?.durationMs).toBe(800);
 
       const providerTerminal = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(providerTerminal.inputs, [
@@ -2675,10 +2676,11 @@ describe("EnvironmentThreads", () => {
         providerTerminal.inputs,
         liveProviderTurnEvent(liveSequence(8), "completed"),
       );
-      yield* awaitThreadState(
+      const terminal = yield* awaitThreadState(
         providerTerminal.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.sequence === liveSequence(8),
       );
+      expect(terminal.liveGenerationSpeed?.durationMs).toBe(800);
     }),
   );
 
@@ -2807,7 +2809,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("expires a quiet live reading without inventing output", () =>
+  it.effect("retains the last reading while output is quiet without counting the wait", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(harness.inputs, [
@@ -2831,19 +2833,30 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.liveGenerationSpeed !== null,
+      );
 
       yield* TestClock.adjust("1500 millis");
-
-      const expired = yield* awaitThreadState(
-        harness.observed,
-        (value) => value.liveGenerationSpeed === null,
+      yield* Queue.offer(
+        harness.inputs,
+        liveAssistantEvent({
+          sequence: liveSequence(8),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 3_000,
+        }),
       );
-      expect(expired.liveGenerationSpeed).toBeNull();
+      const quiet = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.sequence === liveSequence(8),
+      );
+      expect(quiet.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
-  it.effect("clears the live reading on completion or a replacement snapshot", () =>
+  it.effect("retains the reading on completion and resets it for a replacement snapshot", () =>
     Effect.gen(function* () {
       const completed = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(completed.inputs, [
@@ -2869,7 +2882,11 @@ describe("EnvironmentThreads", () => {
       ]);
       yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed !== null);
       yield* Queue.offer(completed.inputs, liveRunEvent(liveSequence(8), "completed"));
-      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed === null);
+      const finished = yield* awaitThreadState(
+        completed.observed,
+        (value) => value.sequence === liveSequence(8),
+      );
+      expect(finished.liveGenerationSpeed?.durationMs).toBe(800);
 
       const snapshotted = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(snapshotted.inputs, [

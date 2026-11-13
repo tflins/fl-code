@@ -92,7 +92,10 @@ import type { RemoteClientConnectionState } from "../../lib/connection";
 import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import { Menu } from "../../components/ui/Menu";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
-import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
+import {
+  GENERATION_SPEED_PLACEHOLDER,
+  type GenerationSpeedPresentation,
+} from "@t3tools/client-runtime/state/generation-speed";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
   resolveComposerSendPresentation,
@@ -1094,15 +1097,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   compactEditor.isExpanded ? { flex: 1, justifyContent: "flex-end" } : undefined
                 }
               >
-                {props.generationSpeed ? (
-                  <Text
-                    accessibilityLabel={props.generationSpeed.details}
-                    className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
-                    numberOfLines={1}
-                  >
-                    {props.generationSpeed.label}
-                  </Text>
-                ) : null}
+                <Text
+                  accessibilityLabel={
+                    props.generationSpeed?.details ??
+                    "Estimated output throughput. No measurement is available yet."
+                  }
+                  className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
+                  numberOfLines={1}
+                >
+                  {props.generationSpeed?.label ?? GENERATION_SPEED_PLACEHOLDER}
+                </Text>
                 {modelControl}
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}
