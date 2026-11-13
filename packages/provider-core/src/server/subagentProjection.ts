@@ -64,6 +64,7 @@ export function makeSubagentChildThread(input: {
 }): OrchestrationV2AppThread {
   return {
     ...input.parentThread,
+    decision: undefined,
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,
@@ -375,8 +376,16 @@ export function subagentOriginalResultForRun(
           .filter((item) => item.runId === run.id && item.type === "error")
           .toSorted((left, right) => right.ordinal - left.ordinal)[0]
       : undefined;
+  const reportBeforeFailure =
+    failure !== undefined && turnItem !== null && turnItem.ordinal < failure.ordinal
+      ? (message?.text ?? turnItem.text)
+      : undefined;
   const text =
-    (failure?.type === "error" ? failure.failure.message : undefined) ??
+    (failure?.type === "error"
+      ? reportBeforeFailure === undefined
+        ? failure.failure.message
+        : `${failure.failure.message}\n\nLast assistant message before the run failed:\n\n${reportBeforeFailure}`
+      : undefined) ??
     message?.text ??
     turnItem?.text;
   return text === undefined

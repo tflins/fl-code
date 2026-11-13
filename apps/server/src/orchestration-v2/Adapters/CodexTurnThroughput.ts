@@ -9,6 +9,14 @@ interface CodexThroughputWait {
 export interface CodexTurnThroughputTracker {
   readonly waits: Map<string, CodexThroughputWait>;
   readonly runningModelOutputs: Set<string>;
+  readonly modelOutputTimings: Map<string, { startedAtMs?: number; completedAtMs?: number }>;
+  outputStep?: {
+    startedAtMs: number;
+    completedAtMs?: number;
+    closedByWait: boolean;
+    ambiguous: boolean;
+  };
+  lastUsageTotalTokens?: number;
   contaminated: boolean;
 }
 
@@ -16,6 +24,7 @@ export function makeCodexTurnThroughputTracker(): CodexTurnThroughputTracker {
   return {
     waits: new Map(),
     runningModelOutputs: new Set(),
+    modelOutputTimings: new Map(),
     contaminated: false,
   };
 }
@@ -33,6 +42,16 @@ export function beginCodexThroughputWait(
     startedAtMs,
     overlapsModelOutput: tracker.runningModelOutputs.size > 0,
   });
+  const step = tracker.outputStep;
+  if (
+    step !== undefined &&
+    !step.closedByWait &&
+    tracker.runningModelOutputs.size === 0 &&
+    startedAtMs >= step.startedAtMs
+  ) {
+    step.completedAtMs = Math.max(step.completedAtMs ?? startedAtMs, startedAtMs);
+    step.closedByWait = true;
+  }
 }
 
 export function endCodexThroughputWait(
@@ -56,8 +75,18 @@ export function endCodexThroughputWait(
 export function beginCodexThroughputModelOutput(
   tracker: CodexTurnThroughputTracker,
   id: string,
+  startedAtMs?: number,
 ): void {
   tracker.runningModelOutputs.add(id);
+  if (startedAtMs !== undefined && Number.isSafeInteger(startedAtMs) && startedAtMs >= 0) {
+    if (!tracker.modelOutputTimings.has(id)) tracker.modelOutputTimings.set(id, { startedAtMs });
+    const step = tracker.outputStep;
+    if (step === undefined) {
+      tracker.outputStep = { startedAtMs, closedByWait: false, ambiguous: false };
+    } else if (step.closedByWait) {
+      step.ambiguous = true;
+    }
+  }
   for (const wait of tracker.waits.values()) {
     if (wait.completedAtMs === undefined) wait.overlapsModelOutput = true;
   }
@@ -66,8 +95,43 @@ export function beginCodexThroughputModelOutput(
 export function endCodexThroughputModelOutput(
   tracker: CodexTurnThroughputTracker,
   id: string,
+  completedAtMs?: number,
 ): void {
   tracker.runningModelOutputs.delete(id);
+  if (completedAtMs === undefined || !Number.isSafeInteger(completedAtMs) || completedAtMs < 0)
+    return;
+  const timing = tracker.modelOutputTimings.get(id) ?? {};
+  timing.completedAtMs = completedAtMs;
+  tracker.modelOutputTimings.set(id, timing);
+  const step = tracker.outputStep;
+  if (step === undefined) return;
+  if (completedAtMs < step.startedAtMs) step.ambiguous = true;
+  step.completedAtMs = Math.max(step.completedAtMs ?? completedAtMs, completedAtMs);
+}
+
+export function takeCodexOutputStepDuration(
+  tracker: CodexTurnThroughputTracker,
+  totalTokens: number,
+): number | undefined {
+  if (
+    !Number.isSafeInteger(totalTokens) ||
+    totalTokens < 0 ||
+    totalTokens === tracker.lastUsageTotalTokens
+  )
+    return undefined;
+  tracker.lastUsageTotalTokens = totalTokens;
+  const step = tracker.outputStep;
+  delete tracker.outputStep;
+  if (
+    step === undefined ||
+    step.ambiguous ||
+    tracker.contaminated ||
+    tracker.runningModelOutputs.size > 0 ||
+    step.completedAtMs === undefined
+  )
+    return undefined;
+  const durationMs = step.completedAtMs - step.startedAtMs;
+  return Number.isSafeInteger(durationMs) && durationMs >= 250 ? durationMs : undefined;
 }
 
 export function completeCodexThroughputEstimate(

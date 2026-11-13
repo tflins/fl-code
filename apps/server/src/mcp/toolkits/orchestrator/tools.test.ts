@@ -11,7 +11,7 @@ it("states t3_thread_read page size limits in the parameter descriptions", () =>
   const schema = Tool.getJsonSchema(OrchestratorToolkit.tools.t3_thread_read) as {
     readonly properties: Readonly<Record<string, { readonly description?: string }>>;
   };
-  const limits = { limit: "100", runLimit: "50", maxCharsPerItem: "50000" };
+  const limits = { limit: "100", runLimit: "50", maxCharsPerItem: "20000" };
   for (const [name, maximum] of Object.entries(limits)) {
     expect(schema.properties[name]?.description, name).toContain(maximum);
   }
@@ -26,4 +26,28 @@ it("refuses a t3_thread_update whose fields do not fit its action", () => {
   expect(Exit.isSuccess(decode({ action: "rename", title: "New", environmentId: undefined }))).toBe(
     true,
   );
+});
+
+it("offers decision create and read but no agent confirmation path", () => {
+  const tool = OrchestratorToolkit.tools.t3_decision;
+  const decode = Schema.decodeUnknownExit(tool.parametersSchema);
+  expect(Exit.isSuccess(decode({ action: "read" }))).toBe(true);
+  expect(
+    Exit.isSuccess(
+      decode({
+        action: "create",
+        question: "Should deleted usage stay cached?",
+        context: "Only the reader and retention job depend on it.",
+      }),
+    ),
+  ).toBe(true);
+  expect(Exit.isFailure(decode({ action: "confirm", answer: "Keep it." }))).toBe(true);
+  expect(Exit.isFailure(decode({ action: "cancel" }))).toBe(true);
+
+  const schema = Tool.getJsonSchema(tool) as {
+    readonly properties: Readonly<Record<string, unknown>>;
+  };
+  expect(schema.properties).not.toHaveProperty("confirmed");
+  expect(schema.properties).not.toHaveProperty("createdBy");
+  expect(tool.description).toContain("Only the user can confirm");
 });

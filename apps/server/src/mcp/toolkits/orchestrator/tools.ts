@@ -1,6 +1,8 @@
 import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
+  OrchestratorMcpDecisionInput,
+  OrchestratorMcpDecisionResult,
   OrchestrationV2StopWorkflowInput,
   OrchestratorMcpEnvironmentLinkInput,
   OrchestratorMcpEnvironmentLinkResult,
@@ -46,6 +48,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
@@ -63,6 +66,8 @@ const linkingDependencies = [
   PeerLinkRequests.PeerLinkRequests,
   PeerLinks.PeerLinks,
 ];
+/** A send there may record a follow-up to a remote task. */
+const sendDependencies = [...dependencies, RemoteDelegation.RemoteDelegation];
 const threadMetadataDependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -110,6 +115,20 @@ const TaskStatusTool = Tool.make("task_status", {
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true);
 
+const DecisionTool = Tool.make("t3_decision", {
+  description:
+    "Open or read a separate decision thread. create: use a stable `clientRequestId` for this issue, `question`, minimal `context`, and optional `options`. Retries reuse the issue identity. It keeps the model and workspace, starts a fresh conversation, and returns at once so independent work continues. read: `threadId`, or omit in that decision thread. Only the user can confirm the final answer; intermediate discussion never returns to the source.",
+  parameters: OrchestratorMcpDecisionInput,
+  success: OrchestratorMcpDecisionResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Open a decision thread")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.OpenWorld, true)
+  .annotate(Tool.Idempotent, true);
+
 const TaskCancelTool = Tool.make("task_cancel", {
   description:
     "Stop one delegated task by `taskId`. Stops its running and queued turns, its delegates, and its PR watches, including later runs in its child thread. A finished task keeps its result.",
@@ -154,7 +173,11 @@ const BackgroundWaitTool = Tool.make("t3_background_wait", {
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies,
-}).annotate(Tool.Title, "Wait on background work");
+})
+  .annotate(Tool.Title, "Wait on background work")
+  // Only marks which tasks keep the thread Working; Claude Plan mode blocks tools without this.
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
 
 const ScheduleTaskTool = Tool.make("schedule_task", {
   description:
@@ -238,7 +261,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+    "Read any thread by id. View `messages` (default) or `activity` (all items). Newest first; older: `beforePosition=earlierPosition`; from the start: `afterPosition=-1`, then `nextPosition`. Cut-off text: `itemId`, `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
   parameters: OrchestratorMcpThreadReadInput,
   success: OrchestratorMcpThreadReadResult,
   failure: OrchestratorMcpFailure,
@@ -275,7 +298,7 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
   success: OrchestratorMcpThreadSendResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: sendDependencies,
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)
@@ -353,6 +376,7 @@ export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,
+  DecisionTool,
   TaskCancelTool,
   WorkflowStopTool,
   BackgroundWaitTool,

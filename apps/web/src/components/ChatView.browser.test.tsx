@@ -24,7 +24,7 @@ import type * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import { Activity, StrictMode } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { AppRoot } from "~/AppRoot";
 // The route loads ChatView lazily, and its first transform (React Compiler over ~4k lines)
@@ -44,11 +44,13 @@ import {
   installFakeEnvironment,
   isThreadSubscribed,
   runningRun,
+  dispatchedCommands,
+  rejectPendingCommand,
   threadWithHistory,
   type FakeDriver,
   type FakeThread,
 } from "../../test/fakeEnvironment";
-import { act, render } from "../../test/render";
+import { act, fakeTimers, render } from "../../test/render";
 
 // The socket is the only fake layer; see test/appScenarios.renders.tsx.
 vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (importOriginal) => {
@@ -363,6 +365,150 @@ it("retains each thread's diff selection when returning from another thread or S
   });
 });
 
+it("a stashed prompt ending in a file chip restores with the chip", async () => {
+  using _environment = installFakeEnvironment([]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-28338");
+  const drafts = useComposerDraftStore.getState();
+  drafts.setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+    threadId: ThreadId.make("thread-28338"),
+  });
+  drafts.setPrompt(draftId, "Check [package.json](package.json) ");
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const chip = page.getByRole("button", { name: "Preview package.json" });
+  await expect.element(chip).toBeVisible();
+  // The stash shortcut is a no-op until the shell snapshot lists the project.
+  await expect.element(page.getByText("render", { exact: true }).first()).toBeVisible();
+
+  const editor = page.getByTestId("composer-editor");
+  await userEvent.click(editor);
+  await userEvent.keyboard("{ControlOrMeta>}s{/ControlOrMeta}");
+  await expect.element(chip).not.toBeInTheDocument();
+  await userEvent.keyboard("{ControlOrMeta>}s{/ControlOrMeta}");
+
+  await vi.waitFor(() => expect(editor.element().textContent).toContain("Check"));
+  expect(editor.element().textContent).not.toContain("[package.json](package.json)");
+  await expect.element(chip).toBeVisible();
+});
+
+it("a rejected send leaves the timeline when a new draft was typed meanwhile", async () => {
+  const thread = threadWithHistory("rejected-send", 1);
+  using _environment = installFakeEnvironment([thread], {
+    acceptCommands: true,
+    holdCommand: (command) => command.type === "message.dispatch",
+  });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
+
+  const editor = page.getByTestId("composer-editor");
+  await userEvent.click(editor);
+  await userEvent.keyboard("Failed prompt{Enter}");
+  await vi.waitFor(() =>
+    expect(dispatchedCommands().map((command) => command.type)).toContain("message.dispatch"),
+  );
+  await expect.element(page.getByText("Failed prompt")).toBeVisible();
+  await userEvent.keyboard("Next draft");
+
+  await rejectPendingCommand("Attachment 'sample.png' cannot be sent.");
+
+  await expect.element(page.getByText("Attachment 'sample.png' cannot be sent.")).toBeVisible();
+  await expect.element(page.getByText("Failed prompt")).not.toBeInTheDocument();
+  expect(editor.element().textContent).toContain("Next draft");
+});
+
+it("Enter on an empty prompt resumes an interrupted thread", async () => {
+  const history = threadWithHistory("interrupted", 1);
+  const interruptedRun = { ...history.runs[0]!, status: "interrupted" as const };
+  const thread = { ...history, runs: [interruptedRun] };
+  using _environment = installFakeEnvironment([thread], { acceptCommands: true });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByRole("button", { name: "Resume thread" })).toBeVisible();
+
+  await userEvent.click(page.getByTestId("composer-editor"));
+  await userEvent.keyboard("{Enter}");
+
+  await vi.waitFor(() =>
+    expect(dispatchedCommands()).toContainEqual(
+      expect.objectContaining({ manualContinuationOfRunId: interruptedRun.id }),
+    ),
+  );
+});
+
+it("opening a thread or returning to the window on a touch tablet does not focus the composer", async () => {
+  const realMatchMedia = window.matchMedia.bind(window);
+  using _touch = vi
+    .spyOn(window, "matchMedia")
+    .mockImplementation((query) => realMatchMedia(query === "(pointer: coarse)" ? "all" : query));
+  const first = threadWithHistory("thread-29469-a", 1);
+  const second = threadWithHistory("thread-29469-b", 1);
+  using _environment = installFakeEnvironment([first, second]);
+  // iPad Pro 11 in landscape: the desktop layout, above max-sm.
+  await page.viewport(1194, 834);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${first.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const composer = page.getByTestId("composer-editor");
+  await expect.element(page.getByText(`Answer 0 for ${first.id}.`)).toBeVisible();
+
+  // Fake frames hold the next thread entry's focus frame until the test advances it.
+  using _timers = fakeTimers();
+  await act(() =>
+    router.navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: ENVIRONMENT_ID, threadId: second.id },
+    }),
+  );
+  await expect.element(page.getByText(`Answer 0 for ${second.id}.`)).toBeVisible();
+  vi.advanceTimersToNextFrame();
+  // Focusing the editor raises the on-screen keyboard, which shrinks the page on iPadOS.
+  expect(document.activeElement).not.toBe(composer.element());
+
+  // ChatView waits two frames after window focus before refocusing the composer.
+  window.dispatchEvent(new FocusEvent("focus"));
+  vi.advanceTimersToNextFrame();
+  vi.advanceTimersToNextFrame();
+  expect(document.activeElement).not.toBe(composer.element());
+});
+
 it("shows fresh streaming throughput in the composer and replaces it with the completed average", async () => {
   await page.viewport(1440, 900);
   const thread = threadWithHistory("composer-throughput", 1);
@@ -438,7 +584,7 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
         rootNodeId: nodeId,
         providerInstanceId: run.providerInstanceId,
         providerThreadId,
-        providerTurnId,
+        providerTurnId: null,
         reason: "initial",
         status: "running",
         startedAt: at(0),
@@ -447,36 +593,71 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
     });
     await emitThreadEvent(thread.id, { type: "provider-turn.updated", payload: providerTurn });
   });
+  await expect.element(app.getByText("≈ … tok/s", { exact: true })).toBeVisible();
   const item = {
     ...assistantItem(thread.id, run.id, "throughput-answer", 3, ""),
     providerThreadId,
     providerTurnId,
     status: "running" as const,
     streaming: true,
+    startedAt: at(0),
     completedAt: null,
   };
   await act(async () => {
     for (const [milliseconds, text] of [
       [0, "Streaming"],
-      [400, "Streaming an answer"],
-      [800, "Streaming an answer with more text"],
+      [1_200, "Streaming an answer"],
+      [2_400, "Streaming an answer with more text"],
     ] as const) {
+      await emitThreadEvent(thread.id, {
+        type: "message.updated",
+        occurredAt: at(milliseconds),
+        payload: {
+          id: item.messageId,
+          threadId: thread.id,
+          runId: run.id,
+          nodeId: null,
+          role: "assistant",
+          text,
+          createdBy: "agent",
+          creationSource: "provider",
+          attachments: [],
+          streaming: true,
+          createdAt: at(0),
+          updatedAt: at(milliseconds),
+        },
+      });
       await emitThreadEvent(thread.id, {
         type: "turn-item.updated",
         occurredAt: at(milliseconds),
-        payload: { ...item, text, updatedAt: at(milliseconds) },
+        payload: { ...item, text: "", textOmitted: true, updatedAt: at(milliseconds) },
       });
     }
   });
-  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).toBeVisible();
+  await expect.element(app.getByText(/^≈ [\d.]+ tok\/s$/)).toBeVisible();
+  await act(async () => {
+    await emitThreadEvent(thread.id, {
+      type: "turn-item.updated",
+      occurredAt: at(2_500),
+      payload: {
+        ...item,
+        text: "Streaming an answer with more text",
+        streaming: false,
+        status: "completed",
+        completedAt: at(2_500),
+        updatedAt: at(2_500),
+      },
+    });
+  });
+  await expect.element(app.getByText(/^≈ [\d.]+ tok\/s$/)).toBeVisible();
   await act(async () => {
     await emitThreadEvent(thread.id, {
       type: "provider-turn.updated",
-      occurredAt: at(1_000),
+      occurredAt: at(3_000),
       payload: {
         ...providerTurn,
         status: "completed",
-        completedAt: at(1_000),
+        completedAt: at(3_000),
         throughputEstimate: {
           basis: "turn_wall_minus_known_waits",
           outputTokens: 120,
@@ -492,6 +673,15 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
       },
     });
   });
-  await expect.element(app.getByText("Avg ≈ 120 tok/s", { exact: true })).toBeVisible();
-  await expect.element(app.getByText(/^Live ≈ .* tok\/s$/)).not.toBeInTheDocument();
+  await expect.element(app.getByText("≈ 120 tok/s", { exact: true })).toBeVisible();
+  await act(async () => {
+    await emitThreadEvent(thread.id, {
+      type: "run.created",
+      payload: {
+        ...runningRun(thread.id, "throughput-next", 3, "throughput-next-user"),
+        activeAttemptId: RunAttemptId.make("throughput-next-attempt"),
+      },
+    });
+  });
+  await expect.element(app.getByText("≈ 120 tok/s", { exact: true })).toBeVisible();
 });

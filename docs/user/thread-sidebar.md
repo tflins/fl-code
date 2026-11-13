@@ -134,7 +134,7 @@ open.
 
 Threads that are working or waiting on work they will resume from move into a collapsed
 **Working** section below the active list.
-That includes subagents, watched pull requests, and background commands or monitors the agent
+That includes subagents, watched pull requests with checks still running, and background commands or monitors the agent
 says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
 there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
 answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
@@ -273,6 +273,7 @@ On mobile, open a subagent from its conversation card or **Agents**. On iOS
 layouts with an inspector, its thread opens beside the parent. Maximize it to
 fill the screen; close the full-screen view to return to the parent and inspector.
 Stop on a thread also stops the subagents it delegated to.
+Before archiving the parent, wait for its delegated tasks to finish or cancel them.
 
 Subagent threads started by the agent can't take messages; message the parent
 thread instead. When such a subagent needs an approval or an answer, the parent
@@ -350,3 +351,11 @@ A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early for an approval,
 a new question, a failed run, or a message or answer you send. You can snooze an existing
 question and answer when the thread wakes; the question stays unanswered.
+
+## 决策会话
+
+决策会话用于将需要多轮讨论的问题从执行任务中分离。Agent 会带入与问题相关的背景，继续处理不依赖答案的工作；讨论过程保留在独立会话中。Inbox 的决策标识可区分这类会话，来源链接可返回执行任务。
+
+简单选项可直接提交；自由讨论结束后，在“Final decision”中填写结论并选择“Confirm and return”。只有确认的结论会回传，普通聊天不会提前作出决定。回传成功后事项退出 Inbox，底部决策面板收起为摘要，展开“Details”可查看结论和来源；投递失败时可保留结论并重试。
+
+已结束的会话保留讨论上下文，继续聊天不会自动重开事项。修改原决定时，展开“Details”，选择“Reopen discussion”，讨论后重新确认；新的独立问题应从来源任务另建决策会话，相关子问题可在同一事项中一起讨论。“Cancel decision”表示不提供答案，暂缓或关闭会话不会产生默认选择。第一版支持同一环境内的决策与回传，包含连接该环境的远程客户端。

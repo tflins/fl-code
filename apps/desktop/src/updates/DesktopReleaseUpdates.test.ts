@@ -84,31 +84,49 @@ it.effect(
     ),
 );
 
-it.effect("follows GitHub release asset redirects", () =>
+it.effect.each([
+  {
+    name: "renamed release feed",
+    urls: [
+      "https://api.github.com/repos/tflins/t3code/releases",
+      "https://api.github.com/repos/tflins/fl-code/releases",
+    ],
+    body: "[]",
+  },
+  {
+    name: "renamed release asset and CDN",
+    urls: [
+      "https://github.com/tflins/t3code/releases/download/tflins-v0.1.8/SHA256SUMS",
+      "https://github.com/tflins/fl-code/releases/download/tflins-v0.1.8/SHA256SUMS",
+      "https://release-assets.githubusercontent.com/SHA256SUMS",
+    ],
+    body: "checksum  archive.zip",
+  },
+])("follows redirects for $name", ({ urls, body }) =>
   Effect.gen(function* () {
-    const sourceUrl =
-      "https://github.com/tflins/fl-code/releases/download/tflins-v0.1.8/SHA256SUMS";
-    const redirectUrl = "https://release-assets.githubusercontent.com/SHA256SUMS";
     const requestedUrls: string[] = [];
     const client = DesktopReleaseUpdates.followReleaseRedirects(
       HttpClient.make((request) =>
         Effect.sync(() => {
           requestedUrls.push(request.url);
-          return request.url === sourceUrl
-            ? HttpClientResponse.fromWeb(
-                request,
-                new Response(null, {
-                  status: 302,
-                  headers: { location: redirectUrl },
+          const index = urls.indexOf(request.url);
+          assert.isAtLeast(index, 0);
+          const next = urls[index + 1];
+          return HttpClientResponse.fromWeb(
+            request,
+            next === undefined
+              ? new Response(body)
+              : new Response(null, {
+                  status: index === 0 ? 301 : 302,
+                  headers: { location: next },
                 }),
-              )
-            : HttpClientResponse.fromWeb(request, new Response("checksum  archive.zip"));
+          );
         }),
       ),
     );
-    const response = yield* client.get(sourceUrl);
-    assert.equal(yield* response.text, "checksum  archive.zip");
-    assert.deepEqual(requestedUrls, [sourceUrl, redirectUrl]);
+    const response = yield* client.get(urls[0]!);
+    assert.equal(yield* response.text, body);
+    assert.deepEqual(requestedUrls, urls);
   }),
 );
 

@@ -57,13 +57,11 @@ import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/re
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
   getComposerDraftSnapshot,
-  composerDraftsAtom,
   setComposerDraftText,
   composerContextImportsAtom,
   countComposerDraftAttachmentsAfterSelection,
   useComposerDraft,
 } from "../../state/use-composer-drafts";
-import { appAtomRegistry } from "../../state/atom-registry";
 import type { ComposerDocumentAttachment } from "../../lib/composerContext";
 import { useProject, useVisibleThreadShells } from "../../state/entities";
 import { useMentionableEnvironments } from "../../state/environments";
@@ -86,13 +84,20 @@ import {
   composerStripAttachments,
   type DraftComposerFileAttachment,
 } from "../../lib/composerImages";
-import { buildModelOptions, isModelSelectionUnavailable } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  isModelSelectionUnavailable,
+  serverConfigForCwd,
+} from "../../lib/modelOptions";
 import { useScaledTextRole, type ScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import { MOBILE_TYPOGRAPHY } from "../../lib/typography";
 import { Menu } from "../../components/ui/Menu";
 import type { ActiveTurnComposerAction } from "@t3tools/client-runtime/state/composer-dispatch";
-import type { GenerationSpeedPresentation } from "@t3tools/client-runtime/state/generation-speed";
+import {
+  GENERATION_SPEED_PLACEHOLDER,
+  type GenerationSpeedPresentation,
+} from "@t3tools/client-runtime/state/generation-speed";
 import type { FollowUpBehavior } from "../../lib/followUpBehavior";
 import {
   resolveComposerSendPresentation,
@@ -577,7 +582,6 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     ownerKey: composerDraftKey,
     label: props.selectedThread.title || "Untitled thread",
     readDraftMessage: () => getComposerDraftSnapshot(composerDraftKey).text,
-    subscribeToDraftChanges: (onChange) => appAtomRegistry.subscribe(composerDraftsAtom, onChange),
     selection: composerMenu.selection,
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
@@ -717,7 +721,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     ? undefined
     : currentModelSelection.instanceId;
   const modelOptions = buildModelOptions(
-    props.serverConfig,
+    serverConfigForCwd(props.serverConfig, props.projectCwd),
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
@@ -1094,15 +1098,16 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   compactEditor.isExpanded ? { flex: 1, justifyContent: "flex-end" } : undefined
                 }
               >
-                {props.generationSpeed ? (
-                  <Text
-                    accessibilityLabel={props.generationSpeed.details}
-                    className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
-                    numberOfLines={1}
-                  >
-                    {props.generationSpeed.label}
-                  </Text>
-                ) : null}
+                <Text
+                  accessibilityLabel={
+                    props.generationSpeed?.details ??
+                    "Estimated output throughput. No measurement is available yet."
+                  }
+                  className="me-1 max-w-24 shrink text-2xs text-foreground-muted tabular-nums"
+                  numberOfLines={1}
+                >
+                  {props.generationSpeed?.label ?? GENERATION_SPEED_PLACEHOLDER}
+                </Text>
                 {modelControl}
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}

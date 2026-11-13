@@ -3,12 +3,14 @@ import {
   EnvironmentId,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  type OrchestrationV2Decision,
   ProviderInstanceId,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -32,6 +34,16 @@ const oldProviderThreadId = ThreadId.make("thread:old-provider-background");
 const archivedThreadId = ThreadId.make("thread:archived-background");
 const unknownOwnerThreadId = ThreadId.make("thread:unknown-background-owner");
 const codeQaThreadId = ThreadId.make("thread:code-qa");
+const decisionThreadId = ThreadId.make("thread:decision");
+
+const decision: OrchestrationV2Decision = {
+  sourceThreadId: supervisedThreadId,
+  question: "Keep the cache?",
+  status: "discussing",
+  revision: 1,
+  createdAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+  updatedAt: DateTime.makeUnsafe("2026-01-01T00:00:00.000Z"),
+};
 
 const backgroundShell = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) => ({
   ...liveThreadShell(threadId, { activeRunId: null }),
@@ -76,6 +88,7 @@ const shells = new Map([
       },
     }),
   ],
+  [decisionThreadId, { ...liveThreadShell(decisionThreadId), decision }],
 ]);
 
 const threadCaller = (threadId: ThreadId): McpInvocationContext.McpInvocationScope => ({
@@ -239,6 +252,10 @@ const oldProviderBackground = threadCaller(oldProviderThreadId);
 const archivedBackground = threadCaller(archivedThreadId);
 const unknownOwnerBackground = threadCaller(unknownOwnerThreadId);
 const codeQa = threadCaller(codeQaThreadId);
+const decisionThread = {
+  ...threadCaller(decisionThreadId),
+  thread: { ...threadCaller(decisionThreadId).thread!, decision: true },
+};
 const mismatchedProvider = {
   ...background,
   thread: { ...background.thread!, providerInstanceId: ProviderInstanceId.make("claude") },
@@ -263,6 +280,15 @@ it.effect.each([
   ["reads", readOnlyClient, {}, "ran"],
   ["reads", codeQa, {}, "ran"],
   ["reads_as_caller", codeQa, {}, "ran"],
+  ["reads", decisionThread, {}, "ran"],
+  ["reads_as_caller", decisionThread, {}, "ran"],
+
+  ["acts_as_caller", decisionThread, {}, "capability_denied"],
+  ["writes", decisionThread, {}, "capability_denied"],
+  ["writes_with_capability", decisionThread, {}, "capability_denied"],
+  ["writes_threads", decisionThread, { threadId: supervisedThreadId }, "capability_denied"],
+  ["starts_threads", decisionThread, {}, "capability_denied"],
+  ["writes_environment", decisionThread, {}, "capability_denied"],
 
   ["acts_as_caller", codeQa, {}, "capability_denied"],
   ["writes", codeQa, {}, "capability_denied"],

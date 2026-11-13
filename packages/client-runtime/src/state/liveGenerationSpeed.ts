@@ -2,22 +2,25 @@ import type {
   OrchestrationV2DomainEvent,
   OrchestrationV2Run,
   OrchestrationV2RunAttempt,
+  OrchestrationV2ProviderTurn,
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { presentLiveWindow, type GenerationSpeedPresentation } from "./generationSpeed.ts";
+import {
+  deriveGenerationSpeed,
+  presentLiveWindow,
+  presentCompletedTurn,
+  presentProviderStep,
+  type GenerationSpeedPresentation,
+} from "./generationSpeed.ts";
 
 const LIVE_GENERATION_WINDOW_MS = 2_000;
-const LIVE_GENERATION_PUBLISH_INTERVAL_MS = 1_000;
-const LIVE_GENERATION_MIN_SPAN_MS = 750;
-const LIVE_GENERATION_MIN_SAMPLES = 3;
+const LIVE_GENERATION_PUBLISH_INTERVAL_MS = 250;
+const LIVE_GENERATION_MIN_ESTIMATE_MS = 250;
 const LIVE_GENERATION_MAX_SAMPLES = 256;
-// A streaming reply normally flushes more often than this. When no sample arrives for
-// this long, the observation is too old to describe current output.
-export const LIVE_GENERATION_QUIET_EXPIRY_MS = 1_500;
 
 const GENERATING_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "preparing",
@@ -35,13 +38,11 @@ export interface LiveGenerationSpeedTracker {
     events: ReadonlyArray<OrchestrationV2DomainEvent>,
     projection: OrchestrationV2ThreadProjection | null,
   ): LiveGenerationBatchResult;
-  /** Drops the current reading and makes the next streaming batch a fresh baseline. */
-  expire(): boolean;
-  reset(): void;
+  reset(options?: { readonly preserveReading?: boolean }): void;
 }
 
 export interface LiveGenerationBatchResult {
-  readonly sawAssistantText: boolean;
+  readonly sawModelOutput: boolean;
   readonly presentation: GenerationSpeedPresentation | null;
   readonly presentationChanged: boolean;
 }
@@ -52,6 +53,7 @@ interface LiveSample {
 }
 
 interface LiveScope {
+  readonly providerTurn: OrchestrationV2ProviderTurn;
   readonly key: string;
   readonly runId: string;
   readonly attemptId: string;
@@ -59,126 +61,95 @@ interface LiveScope {
   readonly providerThreadId: string;
 }
 
-interface CurrentAssistantText {
-  readonly id: string;
-  readonly ordinal: number;
+type StreamedOutputItem = Extract<
+  OrchestrationV2TurnItem,
+  { readonly type: "assistant_message" | "reasoning" | "proposed_plan" }
+>;
+
+interface CurrentOutputText {
   text: string;
   tokens: number;
+  completed: boolean;
   readonly estimator: IncrementalTokenEstimator;
 }
 
 export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
   let scopeKey: string | null = null;
-  let currentText: CurrentAssistantText | null = null;
+  const outputItems = new Map<string, CurrentOutputText>();
   let totalTokens = 0;
   let samples: LiveSample[] = [];
   let published: GenerationSpeedPresentation | null = null;
-  let publishedAtMs = 0;
+  let publishedAtMs: number | null = null;
+  let publishedScopeKey: string | null = null;
+  let providerSampleKey: string | null = null;
   let lastEventAtMs: number | null = null;
 
   const clearWindow = () => {
-    currentText = null;
+    outputItems.clear();
     totalTokens = 0;
     samples = [];
-    published = null;
-    publishedAtMs = 0;
     lastEventAtMs = null;
   };
 
-  const reset = () => {
+  const reset: LiveGenerationSpeedTracker["reset"] = (options) => {
     scopeKey = null;
+    if (options?.preserveReading !== true) {
+      published = null;
+      publishedAtMs = null;
+      publishedScopeKey = null;
+      providerSampleKey = null;
+    }
     clearWindow();
   };
 
-  const observeAssistantText = (
-    eventTimeMs: number,
-    item: OrchestrationV2TurnItem & { readonly type: "assistant_message" },
-    scope: LiveScope,
-  ): boolean => {
-    if (
-      item.runId !== scope.runId ||
-      item.providerTurnId !== scope.providerTurnId ||
-      item.providerThreadId !== scope.providerThreadId ||
-      item.streaming !== true ||
-      !isOrchestrationV2WorkActive(item.status)
-    ) {
-      return false;
-    }
+  const observeOutput = (eventTimeMs: number, item: StreamedOutputItem): boolean => {
     if (!Number.isFinite(eventTimeMs)) return false;
-    if (lastEventAtMs !== null && eventTimeMs < lastEventAtMs) {
-      // Replaying an old timestamp is not evidence of output arriving now. Drop the
-      // window and let a later event establish a fresh baseline.
-      clearWindow();
+    if (lastEventAtMs !== null && eventTimeMs < lastEventAtMs) return false;
+
+    const text = outputText(item);
+    const existing = outputItems.get(item.id);
+    if (existing === undefined) {
+      const estimator = makeIncrementalTokenEstimator();
+      const tokens = estimator.append(text);
+      outputItems.set(item.id, { text, tokens, estimator, completed: false });
+      const previousTokens = totalTokens;
+      totalTokens += tokens;
+      if (samples.length === 0) {
+        const startedAtMs =
+          item.startedAt === null ? eventTimeMs : DateTime.toEpochMillis(item.startedAt);
+        samples =
+          (published === null ||
+            publishedScopeKey !== scopeKey ||
+            (publishedAtMs !== null && startedAtMs > publishedAtMs)) &&
+          eventTimeMs - startedAtMs >= LIVE_GENERATION_MIN_ESTIMATE_MS
+            ? [{ atMs: startedAtMs, tokens: previousTokens }]
+            : [{ atMs: eventTimeMs, tokens: totalTokens }];
+      }
+      recordSample(eventTimeMs);
+      return tokens > 0;
+    }
+    if (existing.completed || text === existing.text) return false;
+    if (!text.startsWith(existing.text)) {
+      existing.estimator.reset();
+      const tokens = existing.estimator.append(text);
+      totalTokens += tokens - existing.tokens;
+      existing.tokens = tokens;
+      existing.text = text;
+      samples = [{ atMs: eventTimeMs, tokens: totalTokens }];
       lastEventAtMs = eventTimeMs;
       return false;
     }
 
-    const existing = currentText;
-    if (existing === null || item.ordinal > existing.ordinal) {
-      const estimator = makeIncrementalTokenEstimator();
-      estimator.append(item.text);
-      const tokens = estimator.tokens();
-      totalTokens += tokens;
-      currentText = {
-        id: item.id,
-        ordinal: item.ordinal,
-        text: item.text,
-        tokens,
-        estimator,
-      };
-      rebaseline(eventTimeMs);
-      return false;
-    }
-    if (item.id !== existing.id || item.ordinal < existing.ordinal) return false;
-    if (item.text === existing.text) return false;
-    if (item.text.length <= existing.text.length) {
-      // Streaming text is append-only for the supported Codex driver. Anything else
-      // is a rewrite, so its text becomes a new baseline rather than new output.
-      installRewriteBaseline(eventTimeMs, item.text, existing);
-      return false;
-    }
-
-    const delta = item.text.slice(existing.text.length);
-    const tokens = existing.estimator.append(delta);
-    totalTokens += tokens - existing.tokens;
+    const tokens = existing.estimator.append(text.slice(existing.text.length));
+    const addedTokens = tokens - existing.tokens;
+    totalTokens += addedTokens;
     existing.tokens = tokens;
-    existing.text = item.text;
-    recordSample(eventTimeMs);
-    return true;
-  };
-
-  const installRewriteBaseline = (
-    eventTimeMs: number,
-    text: string,
-    existing: CurrentAssistantText,
-  ) => {
-    const estimator = makeIncrementalTokenEstimator();
-    estimator.append(text);
-    const tokens = estimator.tokens();
-    totalTokens += tokens - existing.tokens;
     existing.text = text;
-    existing.tokens = tokens;
-    existing.estimator.reset();
-    existing.estimator.append(text);
-    rebaseline(eventTimeMs);
+    recordSample(eventTimeMs);
+    return addedTokens > 0;
   };
 
-  const rebaseline = (eventTimeMs: number) => {
-    samples = [{ atMs: eventTimeMs, tokens: totalTokens }];
-    published = null;
-    publishedAtMs = 0;
-    lastEventAtMs = eventTimeMs;
-  };
-
-  const recordSample = (eventTimeMs: number) => {
-    if (!Number.isFinite(eventTimeMs)) return;
-    const atMs = eventTimeMs;
-    if (lastEventAtMs !== null && atMs - lastEventAtMs > LIVE_GENERATION_WINDOW_MS) {
-      // A long gap is a fresh baseline; the old burst cannot describe current output.
-      samples = [];
-      published = null;
-      publishedAtMs = 0;
-    }
+  const recordSample = (atMs: number) => {
     const last = samples.at(-1);
     if (last !== undefined && last.atMs === atMs) {
       samples[samples.length - 1] = { atMs, tokens: totalTokens };
@@ -186,7 +157,8 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
       samples.push({ atMs, tokens: totalTokens });
     }
     const cutoff = atMs - LIVE_GENERATION_WINDOW_MS;
-    while (samples.length > 0 && samples[0]!.atMs < cutoff) samples.shift();
+    // Keep the left boundary so a sparse stream can still form a measured interval.
+    while (samples.length > 2 && samples[1]!.atMs <= cutoff) samples.shift();
     while (samples.length > LIVE_GENERATION_MAX_SAMPLES) samples.shift();
     publishIfDue(atMs);
     lastEventAtMs = atMs;
@@ -194,15 +166,17 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
 
   const publishIfDue = (atMs: number) => {
     const first = samples[0];
-    if (first === undefined || samples.length < LIVE_GENERATION_MIN_SAMPLES) return;
+    if (first === undefined || samples.length < 2) return;
     const span = atMs - first.atMs;
     const tokens = totalTokens - first.tokens;
-    if (span < LIVE_GENERATION_MIN_SPAN_MS || tokens <= 0) return;
-    if (published !== null && atMs - publishedAtMs < LIVE_GENERATION_PUBLISH_INTERVAL_MS) return;
+    if (span < LIVE_GENERATION_MIN_ESTIMATE_MS || tokens <= 0) return;
+    if (publishedAtMs !== null && atMs - publishedAtMs < LIVE_GENERATION_PUBLISH_INTERVAL_MS)
+      return;
     const presentation = presentLiveWindow(tokens, span);
     if (presentation === null) return;
     published = presentation;
     publishedAtMs = atMs;
+    publishedScopeKey = scopeKey;
   };
 
   const observeBatch = (
@@ -210,20 +184,44 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     projection: OrchestrationV2ThreadProjection | null,
   ) => {
     const before = published;
-    let sawAssistantText = false;
+    let sawModelOutput = false;
     let terminal = false;
+    if (published === null && projection !== null) {
+      published = restoreLatestReading(projection);
+    }
+    const completed = projection === null ? null : deriveGenerationSpeed(projection);
+    if (
+      completed !== null &&
+      (published?.kind !== "average" ||
+        published.outputTokens !== completed.outputTokens ||
+        published.durationMs !== completed.durationMs)
+    ) {
+      published = completed;
+    }
     const scope = liveScope(projection);
     if (scope === null) {
-      reset();
+      clearWindow();
       return {
-        sawAssistantText,
+        sawModelOutput,
         presentation: published,
-        presentationChanged: false,
+        presentationChanged: published !== before,
       } satisfies LiveGenerationBatchResult;
     }
     if (scope.key !== scopeKey) {
       scopeKey = scope.key;
       clearWindow();
+    }
+    const usage = scope.providerTurn.tokenUsage;
+    const sampleKey = `${scope.providerTurnId}:${usage?.updatedAt}:${usage?.outputTokens}:${usage?.outputDurationMs}`;
+    if (sampleKey !== providerSampleKey) {
+      const reading = presentProviderStep(scope.providerTurn);
+      if (reading !== null) {
+        published = reading;
+        publishedScopeKey = scope.key;
+        const atMs = Date.parse(usage!.updatedAt);
+        publishedAtMs = Number.isFinite(atMs) ? atMs : null;
+        providerSampleKey = sampleKey;
+      }
     }
     for (const event of events) {
       switch (event.type) {
@@ -242,8 +240,13 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
           }
           break;
         case "turn-item.updated": {
-          const item = event.payload;
-          if (item.type !== "assistant_message" || item.textOmitted !== undefined) break;
+          const payload = event.payload;
+          const item =
+            payload.type === "assistant_message" && payload.textOmitted === true
+              ? projection?.turnItems.findLast((candidate) => candidate.id === payload.id)
+              : payload;
+          if (item === undefined || !isStreamedOutputItem(item)) break;
+          if (item.type === "assistant_message" && item.textOmitted === true) break;
           if (
             item.runId !== scope.runId ||
             item.providerTurnId !== scope.providerTurnId ||
@@ -252,12 +255,24 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
             break;
           }
           if (item.streaming !== true || !isOrchestrationV2WorkActive(item.status)) {
-            if (currentText === null || item.ordinal >= currentText.ordinal) terminal = true;
+            const existing = outputItems.get(item.id);
+            if (existing !== undefined) {
+              existing.completed = true;
+              existing.text = "";
+              existing.estimator.reset();
+            }
+            if (published === null || existing === undefined) {
+              const reading = presentCompletedOutput(item);
+              if (reading !== null) {
+                published = reading;
+                publishedScopeKey = scope.key;
+                publishedAtMs = DateTime.toEpochMillis(event.occurredAt);
+              }
+            }
             break;
           }
-          sawAssistantText =
-            observeAssistantText(DateTime.toEpochMillis(event.occurredAt), item, scope) ||
-            sawAssistantText;
+          sawModelOutput =
+            observeOutput(DateTime.toEpochMillis(event.occurredAt), item) || sawModelOutput;
           break;
         }
       }
@@ -267,7 +282,7 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
       scopeKey = scope.key;
     }
     return {
-      sawAssistantText,
+      sawModelOutput,
       presentation: published,
       presentationChanged: published !== before,
     } satisfies LiveGenerationBatchResult;
@@ -275,15 +290,64 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
 
   return {
     observeBatch,
-    expire: () => {
-      const changed = published !== null;
-      published = null;
-      publishedAtMs = 0;
-      samples = [];
-      return changed;
-    },
     reset,
   };
+}
+
+function restoreLatestReading(projection: OrchestrationV2ThreadProjection) {
+  let latestAt = -Infinity;
+  let reading: GenerationSpeedPresentation | null = null;
+  for (const turn of projection.providerTurns) {
+    if (turn.completedAt === null) continue;
+    const atMs = DateTime.toEpochMillis(turn.completedAt);
+    if (atMs <= latestAt) continue;
+    const candidate = presentCompletedTurn(turn);
+    if (candidate !== null) {
+      latestAt = atMs;
+      reading = candidate;
+    }
+  }
+  for (const item of projection.turnItems) {
+    if (!isStreamedOutputItem(item) || item.completedAt === null) continue;
+    const atMs = DateTime.toEpochMillis(item.completedAt);
+    if (atMs <= latestAt) continue;
+    const providerThread = projection.providerThreads.find(
+      (thread) => thread.id === item.providerThreadId,
+    );
+    if (providerThread?.driver !== "codex") continue;
+    const candidate = presentCompletedOutput(item);
+    if (candidate !== null) {
+      latestAt = atMs;
+      reading = candidate;
+    }
+  }
+  return reading;
+}
+
+function presentCompletedOutput(item: StreamedOutputItem) {
+  if (
+    item.status !== "completed" ||
+    item.streaming ||
+    (item.type === "assistant_message" && item.textOmitted === true) ||
+    item.startedAt === null ||
+    item.completedAt === null
+  )
+    return null;
+  const durationMs =
+    DateTime.toEpochMillis(item.completedAt) - DateTime.toEpochMillis(item.startedAt);
+  return durationMs < LIVE_GENERATION_MIN_ESTIMATE_MS
+    ? null
+    : presentLiveWindow(estimateVisibleTextTokens(outputText(item)), durationMs);
+}
+
+function isStreamedOutputItem(item: OrchestrationV2TurnItem): item is StreamedOutputItem {
+  return (
+    item.type === "assistant_message" || item.type === "reasoning" || item.type === "proposed_plan"
+  );
+}
+
+function outputText(item: StreamedOutputItem): string {
+  return item.type === "proposed_plan" ? item.markdown : item.text;
 }
 
 function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScope | null {
@@ -301,15 +365,10 @@ function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScop
       candidate.runId === run.id &&
       ACTIVE_ATTEMPT_STATUSES.has(candidate.status),
   );
-  if (attempt === undefined || attempt.providerTurnId === null) return null;
+  if (attempt === undefined) return null;
 
-  const providerTurn = projection.providerTurns.find(
-    (candidate) =>
-      candidate.id === attempt.providerTurnId &&
-      candidate.runAttemptId === attempt.id &&
-      candidate.status === "running",
-  );
-  if (providerTurn === undefined) return null;
+  const providerTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
+  if (providerTurn?.status !== "running") return null;
 
   const providerThread = projection.providerThreads.find(
     (candidate) => candidate.id === providerTurn.providerThreadId,
@@ -317,6 +376,7 @@ function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScop
   if (providerThread?.driver !== "codex") return null;
 
   return {
+    providerTurn,
     key: `${run.id}\u0000${attempt.id}\u0000${providerTurn.id}`,
     runId: run.id,
     attemptId: attempt.id,

@@ -27,6 +27,10 @@
       "types": "./src/composerModelMentions.ts",
       "default": "./src/composerModelMentions.ts"
     },
+    "./locales": {
+      "types": "./src/locales.ts",
+      "default": "./src/locales.ts"
+    },
     "./model-search": {
       "types": "./src/modelSearch.ts",
       "default": "./src/modelSearch.ts"
@@ -335,6 +339,10 @@
       "types": "./src/state/threads.ts",
       "default": "./src/state/threads.ts"
     },
+    "./state/thread-activity-announcement": {
+      "types": "./src/state/threadActivityAnnouncement.ts",
+      "default": "./src/state/threadActivityAnnouncement.ts"
+    },
     "./state/subagent-display": {
       "types": "./src/state/subagentDisplay.ts",
       "default": "./src/state/subagentDisplay.ts"
@@ -570,6 +578,14 @@
     "./provider-instance-ids": {
       "types": "./src/providerInstanceIds.ts",
       "default": "./src/providerInstanceIds.ts"
+    },
+    "./decision-presentation": {
+      "types": "./src/decisionPresentation.ts",
+      "default": "./src/decisionPresentation.ts"
+    },
+    "./decision-submission": {
+      "types": "./src/decisionSubmission.ts",
+      "default": "./src/decisionSubmission.ts"
     }
   },
   "scripts": {

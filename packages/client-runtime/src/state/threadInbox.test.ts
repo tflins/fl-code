@@ -1,5 +1,6 @@
 import { EnvironmentId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import * as DateTime from "effect/DateTime";
 
 import {
   createInboxReturnTracker,
@@ -35,6 +36,22 @@ function thread(id: string, working: boolean) {
 }
 
 describe("createInboxReturnTracker", () => {
+  it("keeps an open decision in the inbox while its discussion agent works", () => {
+    const now = DateTime.makeUnsafe("2026-06-01T00:00:00.000Z");
+    const discussing = {
+      ...thread("decision", true),
+      decision: {
+        sourceThreadId: ThreadId.make("source"),
+        question: "Choose a retention policy",
+        status: "discussing" as const,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+    };
+    expect(isThreadWorking(discussing)).toBe(false);
+    expect(isThreadWorking(thread("source", true))).toBe(true);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(10_000);
@@ -77,6 +94,26 @@ describe("createInboxReturnTracker", () => {
     expect(tracker.returnedAt(thread("a", false))).toBe(12_000);
     expect(notify).toHaveBeenCalledTimes(1);
     unsubscribe();
+  });
+
+  it("moves a thread whose run ended long ago at once, as after a reconnect", () => {
+    const tracker = createInboxReturnTracker();
+    const finished = {
+      ...thread("a", false),
+      latestRun: {
+        runId: RunId.make("ended-while-away"),
+        status: "completed" as const,
+        requestedAt: "1970-01-01T00:00:02.000Z",
+        startedAt: "1970-01-01T00:00:02.000Z",
+        completedAt: "1970-01-01T00:00:09.000Z",
+        assistantMessageId: null,
+      },
+    };
+    tracker.observe([thread("a", true)]);
+    vi.setSystemTime(200_000);
+    tracker.observe([finished]);
+    expect(tracker.isWorking(finished)).toBe(false);
+    expect(tracker.returnedAt(finished)).toBe(200_000);
   });
 
   it("cancels a transient return on resume and grants a fresh grace after the next finish", () => {

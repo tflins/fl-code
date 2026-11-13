@@ -1,3 +1,4 @@
+import { decisionComposerPlaceholder } from "@t3tools/client-runtime/decision-presentation";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../layout/workspace/useSystemWorkspaceTabBar";
@@ -207,6 +208,7 @@ import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
+import { DecisionThreadPanel } from "./DecisionThreadPanel";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-scroll-position";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
@@ -251,7 +253,8 @@ export interface ThreadDetailScreenProps {
   /** Set while the next send compacts the thread first. */
   readonly compactBeforeSend?: {
     readonly tokens: number;
-    readonly keepFullHistory: () => void;
+    readonly keepFullHistory: boolean;
+    readonly toggleKeepFullHistory: () => void;
   } | null;
   readonly creationState:
     | {
@@ -1064,11 +1067,16 @@ function ThreadDetailBody(
       windowHeight: screenAreaHeight,
       keyboardHeight: keyboardStickyEnabled ? -keyboardTranslation.value : 0,
       navigationHeaderHeight,
-      composerOverlapHeight: composerBottomInset,
+      // An in-flow question shares the room above it with the floating control.
+      composerOverlapHeight:
+        composerBottomInset +
+        (questionInFlow && showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : 0),
     }),
   );
+  // A question pads itself clear of the bottom inset, below the card's own height limit.
+  const questionBottomInset = activeUserInputRequestId !== null ? composerBottomInset : 0;
   const composerPanelsHeightStyle = useAnimatedStyle(() => ({
-    maxHeight: pendingUserInputMaxHeight.value,
+    maxHeight: pendingUserInputMaxHeight.value + questionBottomInset,
     flexGrow: 0,
   }));
   // Questions overlay the composer on iOS; an approval sits above it, so it gives up its height.
@@ -1674,6 +1682,16 @@ function ThreadDetailBody(
                       threadRef={props.selectedThreadDetailRef}
                       canOperateThread={props.canOperateThread}
                     />
+                    {props.selectedThread.decision ? (
+                      <DecisionThreadPanel
+                        key={`${selectedThreadKey}:${props.selectedThread.decision.revision}`}
+                        threadRef={{
+                          environmentId: props.environmentId,
+                          threadId: props.selectedThread.id,
+                        }}
+                        decision={props.selectedThread.decision}
+                      />
+                    ) : null}
                     {props.draftMode ? null : (
                       <ThreadSideChatsRow
                         environmentId={props.environmentId}
@@ -1693,11 +1711,19 @@ function ThreadDetailBody(
                     {props.compactBeforeSend ? (
                       <View className="px-4 pb-3">
                         <Notice
-                          message={`Your next message compacts ${formatTokens(props.compactBeforeSend.tokens)} tokens of history first.`}
+                          message={
+                            props.compactBeforeSend.keepFullHistory
+                              ? `Your next message keeps all ${formatTokens(props.compactBeforeSend.tokens)} tokens of history.`
+                              : `Your next message compacts ${formatTokens(props.compactBeforeSend.tokens)} tokens of history first.`
+                          }
                           icon="arrow.down.right.and.arrow.up.left"
                           floating
-                          onDismiss={props.compactBeforeSend.keepFullHistory}
-                          dismissLabel="Keep the full history"
+                          onDismiss={props.compactBeforeSend.toggleKeepFullHistory}
+                          dismissLabel={
+                            props.compactBeforeSend.keepFullHistory
+                              ? "Compact first"
+                              : "Keep the full history"
+                          }
                         />
                       </View>
                     ) : null}
@@ -1864,7 +1890,8 @@ function ThreadDetailBody(
                             ? props.activePendingApproval.supportsFeedback
                               ? "Send feedback to decline this request"
                               : "Send a message to decline and redirect the agent"
-                            : "Ask anything"
+                            : (decisionComposerPlaceholder(props.selectedThread?.decision) ??
+                              "Ask anything")
                         }
                         contentMaxWidth={contentMaxWidth}
                         draftControls={props.draftMode?.controls(draftViewportHeight)}

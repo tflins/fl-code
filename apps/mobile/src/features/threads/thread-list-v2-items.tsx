@@ -1,3 +1,6 @@
+import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
+import { useQuietThreadShell } from "../../state/entities";
+import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -25,7 +28,11 @@ import {
   formatWorkingDurationLabel,
   resolveThreadWorkingStartedAt,
 } from "@t3tools/client-runtime/state/models";
-import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentMachineKind,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import { canSnooze } from "@t3tools/client-runtime/state/thread-settled";
 import { threadChipCopyTarget } from "@t3tools/client-runtime/thread-reference";
@@ -86,6 +93,42 @@ import { ThreadSearchMatchExcerpt } from "./thread-search-match";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { pullRequestStatus } from "../pull-requests/pullRequestStatus";
+
+function DecisionThreadBadge() {
+  return (
+    <View
+      accessibilityLabel="Decision"
+      className="flex-row items-center gap-1 rounded border border-warning-foreground/30 bg-warning-foreground/10 px-1 py-0.5"
+    >
+      <SymbolView
+        name="bubble.left.and.bubble.right"
+        size={12}
+        tintColorClassName="accent-warning-foreground"
+      />
+      <Text className="text-xs font-t3-medium text-warning-foreground">Decision</Text>
+    </View>
+  );
+}
+
+function DecisionSourceLink(props: { threadRef: ScopedThreadRef }) {
+  const source = useQuietThreadShell(props.threadRef);
+  const openLinkedThread = useOpenLinkedThread();
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={`Open source task: ${source?.title ?? "Source task"}`}
+      className="min-w-0 flex-1"
+      onPress={(event) => {
+        event.stopPropagation();
+        openLinkedThread(props.threadRef);
+      }}
+    >
+      <Text className="text-xs text-foreground-muted" numberOfLines={1}>
+        Source: {source?.title ?? "Source task"}
+      </Text>
+    </Pressable>
+  );
+}
 
 interface StatusLabel {
   // Null when the icon and timer carry the status on their own.
@@ -729,6 +772,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSetThreadAutoSettle,
     onMoveThread,
   } = props;
+  const decisionSourceRef = thread.decision
+    ? { environmentId: thread.environmentId, threadId: thread.decision.sourceThreadId }
+    : null;
   const snoozedRow = props.snoozed === true;
   const pinnedRow = props.pinned === true;
   const dormant = useSwipeRowDormant(props.activationKey);
@@ -770,13 +816,39 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
   const workingLabel = STATUS_LABEL_BY_STATUS[status];
   const showsWoke = status === "ready" && props.wokeAt !== null;
-  const statusLabel =
+  const runtimeStatusLabel =
     (status === "working" && workingLabel !== undefined && thread.goal?.status === "active"
       ? { ...workingLabel, label: "Goal" }
-      : workingLabel) ?? (isUnread ? DONE_STATUS_LABEL : undefined);
+      : workingLabel) ??
+    (isUnread
+      ? { ...DONE_STATUS_LABEL, label: thread.decision ? "AI replied" : "Done" }
+      : undefined);
+  const statusLabel: StatusLabel | undefined = thread.decision
+    ? {
+        label: decisionStatusLabels[thread.decision.status],
+        icon:
+          thread.decision.status === "discussing"
+            ? "questionmark.bubble"
+            : thread.decision.status === "completed"
+              ? "checkmark.circle"
+              : "xmark",
+        className:
+          thread.decision.status === "discussing"
+            ? "text-warning-foreground"
+            : thread.decision.status === "completed"
+              ? "text-adaptive-emerald-700-300"
+              : "text-foreground-muted",
+        iconTintClassName:
+          thread.decision.status === "discussing"
+            ? "accent-warning-foreground"
+            : thread.decision.status === "completed"
+              ? "accent-adaptive-emerald-600-400"
+              : "accent-foreground-muted",
+      }
+    : runtimeStatusLabel;
   const recede = shouldRecedeThreadRow({ status, selected });
   const isRegeneratingTitle = thread.titleRegeneration != null;
-  const rowAccessibilityLabel = `${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
+  const rowAccessibilityLabel = `${thread.decision ? `Decision, ${decisionStatusLabels[thread.decision.status]}: ` : ""}${thread.title}${providerNameLabel ? `, ${providerNameLabel}` : ""}${props.hasQueuedMessages ? ", messages queued to send" : ""}${isRegeneratingTitle ? ", regenerating title" : ""}`;
   const timeLabel = props.timeLabel;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
@@ -1252,12 +1324,12 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 )}
               >
                 {statusLabel.label}
-                {status === "working" ? (
+                {!thread.decision && status === "working" ? (
                   <ThreadListV2Duration
                     startedAt={resolveThreadWorkingStartedAt(thread)}
                     leadingSpace={statusLabel.label !== null}
                   />
-                ) : status === "waiting" ? (
+                ) : !thread.decision && status === "waiting" ? (
                   <ThreadListV2Duration
                     startedAt={thread.latestRun?.completedAt ?? null}
                     leadingSpace={statusLabel.label !== null}
@@ -1290,7 +1362,10 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         </View>
       ) : null}
       <View className="mt-1 flex-row items-center gap-2" style={{ paddingLeft: titleTextInset }}>
-        {(status === "failed" || status === "limited") && thread.runtime?.lastError ? (
+        {thread.decision ? <DecisionThreadBadge /> : null}
+        {decisionSourceRef ? (
+          <DecisionSourceLink threadRef={decisionSourceRef} />
+        ) : (status === "failed" || status === "limited") && thread.runtime?.lastError ? (
           <Text
             className={cn(
               "flex-1 text-xs",
@@ -1332,6 +1407,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ) : (
           <View className="flex-1" />
         )}
+        {thread.decision && runtimeStatusLabel ? (
+          <Text className={cn("shrink-0 text-xs", runtimeStatusLabel.className)}>
+            {status === "working" ? "AI replying" : (runtimeStatusLabel.label ?? "AI waiting")}
+          </Text>
+        ) : null}
         {pr ? (
           <Pressable
             // Padding cancelled by negative margin grows the touch target into
@@ -1411,6 +1491,20 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           </View>
         ) : null}
       </View>
+      {thread.decision &&
+      (status === "failed" || status === "limited") &&
+      thread.runtime?.lastError ? (
+        <Text
+          className={cn(
+            "mt-1 text-xs",
+            status === "limited" ? "text-warning-foreground" : "text-danger-foreground",
+          )}
+          numberOfLines={2}
+          style={{ paddingLeft: titleTextInset }}
+        >
+          {thread.runtime.lastError}
+        </Text>
+      ) : null}
     </>
   );
 
@@ -1501,6 +1595,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             >
               {thread.title}
             </Text>
+            {thread.decision ? (
+              <View className="flex-row items-center gap-1">
+                <DecisionThreadBadge />
+                <Text className="text-xs text-foreground-muted">
+                  {decisionStatusLabels[thread.decision.status]}
+                </Text>
+                {decisionSourceRef ? <DecisionSourceLink threadRef={decisionSourceRef} /> : null}
+              </View>
+            ) : null}
             {providerNameLabel ? (
               <Text
                 className={cn(
@@ -1528,17 +1631,23 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           <Text
             className={cn(
               "text-sm tabular-nums",
-              selected
-                ? selectedThreadRowColors.mutedForegroundClassName
-                : snoozedRow
-                  ? rowAppearance.mutedForegroundClassName
-                  : rowAppearance.tertiaryForegroundClassName,
+              thread.decision && runtimeStatusLabel
+                ? runtimeStatusLabel.className
+                : selected
+                  ? selectedThreadRowColors.mutedForegroundClassName
+                  : snoozedRow
+                    ? rowAppearance.mutedForegroundClassName
+                    : rowAppearance.tertiaryForegroundClassName,
             )}
             style={{ fontFamily: MONO_FONT }}
           >
-            {snoozedRow && props.snoozeWakeLabelText !== undefined
-              ? props.snoozeWakeLabelText
-              : timeLabel}
+            {thread.decision && runtimeStatusLabel
+              ? status === "working"
+                ? "AI replying"
+                : (runtimeStatusLabel.label ?? "AI waiting")
+              : snoozedRow && props.snoozeWakeLabelText !== undefined
+                ? props.snoozeWakeLabelText
+                : timeLabel}
           </Text>
         </View>
       </RowPressable>

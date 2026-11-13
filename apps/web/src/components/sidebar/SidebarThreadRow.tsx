@@ -1,3 +1,4 @@
+import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
 import { useAtomMount } from "@effect/atom-react";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
@@ -8,6 +9,7 @@ import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePull
 import { useDeadlinePassed } from "~/hooks/useDeadline";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { useDraggable } from "@dnd-kit/core";
+import { Link } from "@tanstack/react-router";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
@@ -46,6 +48,7 @@ import {
   ClockIcon,
   GitBranchIcon,
   MessageCircleQuestionIcon,
+  MessagesSquareIcon,
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
@@ -69,6 +72,7 @@ import { useRightPanelStore } from "../../rightPanelStore";
 import { useOpenPrLink } from "../../lib/openPullRequestLink";
 import { useUiStateStore } from "../../uiStateStore";
 import { useThreadSelectionStore } from "../../threadSelectionStore";
+import { buildThreadRouteParams } from "../../threadRoutes";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useNowSecond } from "../../hooks/useNowSecond";
 import { vcsEnvironment, vcsBranchRevalidation } from "../../state/vcs";
@@ -90,6 +94,7 @@ import {
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
   useRetainedValue,
+  withoutRemovedCheckout,
   useSidebarRowSubscriptionLease,
   setFileDragActive,
 } from "../Sidebar.logic";
@@ -106,7 +111,7 @@ import {
   ThreadSearchPullRequestNumber,
 } from "../ThreadStatusIndicators";
 import { pickSnoozePreset, resolveSnoozePresets, type SnoozePreset } from "../Sidebar.snooze";
-import { useThreadShell } from "../../state/entities";
+import { useQuietThreadShell, useThreadShell } from "../../state/entities";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
 import { ThreadSearchMatchExcerpt } from "../ThreadSearchMatch";
 import { makeWorkspaceFileDropHandlers } from "../chat/workspaceFileDrop";
@@ -149,6 +154,44 @@ function RelativeTimeLabel(props: { timestamp: string | null }) {
     : compactSidebarTimeLabel(
         formatRelativeTimeLabel(props.timestamp, Date.parse(`${nowMinute}:00.000Z`)),
       );
+}
+
+function DecisionThreadBadge() {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-warning-foreground/30 bg-warning-foreground/10 px-1 py-0.5 align-middle text-2xs font-medium text-warning-foreground">
+      <MessagesSquareIcon aria-hidden className="size-3" />
+      Decision
+    </span>
+  );
+}
+
+function DecisionRuntimeStatus(props: {
+  status: NonNullable<ReturnType<typeof resolveRowRuntimeStatus>>;
+  onDismissWoke?: (event: ReactMouseEvent) => void;
+}) {
+  const className = cn("inline-flex shrink-0 items-center gap-1 text-2xs", props.status.className);
+  if (props.status.icon === "woke" && props.onDismissWoke) {
+    return (
+      <button
+        type="button"
+        aria-label="Dismiss Woke notification"
+        className={cn(
+          className,
+          "cursor-pointer rounded-sm outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        )}
+        onClick={props.onDismissWoke}
+      >
+        <AlarmClockIcon aria-hidden className="size-3" />
+        <span role="status">Woke</span>
+      </button>
+    );
+  }
+  return (
+    <span className={className}>
+      <TopStatusIcon icon={props.status.icon} className="size-3" />
+      {props.status.label}
+    </span>
+  );
 }
 
 function JumpHintBadge(props: { label: string }) {
@@ -533,6 +576,7 @@ const TOP_STATUS_ICONS = {
   approval: ShieldQuestionIcon,
   failed: CircleAlertIcon,
   done: CircleCheckIcon,
+  cancelled: XIcon,
   woke: AlarmClockIcon,
 } as const;
 
@@ -560,7 +604,7 @@ type SidebarThreadRowProps = {
   wokeAt: string | null;
   isActive: boolean;
   // Set on the active row only; scrolls it into view when a reveal is owed.
-  revealRef?: ((row: HTMLElement, threadKey: string) => void) | undefined;
+  revealRef?: ((row: HTMLElement, threadKey: string) => (() => void) | undefined) | undefined;
   // Unlike isActive, never true for the ancestor standing in for an open
   // subagent: drafts and PR clicks care about which composer is on screen.
   isRouteThread: boolean;
@@ -578,7 +622,7 @@ type SidebarThreadRowProps = {
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
   onRenameTitleChange: (title: string) => void;
-  onCommitRename: (threadRef: ScopedThreadRef, title: string, originalTitle: string) => void;
+  onCommitRename: (threadRef: ScopedThreadRef, title: string) => void;
   onCancelRename: () => void;
   isRenaming: boolean;
   renamingTitle: string;
@@ -663,13 +707,22 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     variantAction,
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+  const decisionSourceRef = thread.decision
+    ? scopeThreadRef(thread.environmentId, thread.decision.sourceThreadId)
+    : null;
+  const decisionSource = useQuietThreadShell(decisionSourceRef);
   const threadKey = scopedThreadKey(threadRef);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
   const { revealRef } = props;
   const rowRef = (row: HTMLElement | null) => {
-    if (row !== null) revealRef?.(row, threadKey);
-    return leaseRowRef(row);
+    const stopReveal = row === null ? undefined : revealRef?.(row, threadKey);
+    const releaseLease = leaseRowRef(row);
+    if (!stopReveal) return releaseLease;
+    return () => {
+      stopReveal();
+      releaseLease?.();
+    };
   };
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
@@ -714,6 +767,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     JSON.stringify([thread.environmentId, gitCwd]),
     gitStatus.data,
   );
+  const checkoutThread = withoutRemovedCheckout(thread, visibleGitStatus);
   const pr = linkedPullRequestStatus?.pr ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
   const currentLinkedPr = supportsMultiplePullRequests
@@ -735,67 +789,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus =
-    status === "preparing" || status === "working"
-      ? {
-          label:
-            status === "preparing"
-              ? "Setting up"
-              : thread.goal?.status === "active"
-                ? "Goal"
-                : "Working",
-          icon: "working" as const,
-          className: "text-info-foreground",
-        }
-      : status === "waiting"
-        ? {
-            label: "Waiting",
-            icon: "waiting" as const,
-            className: "text-muted-foreground",
-          }
-        : status === "approval"
-          ? {
-              label: "Approval",
-              icon: "approval" as const,
-              className: "text-warning-foreground",
-            }
-          : status === "input"
-            ? {
-                label: "Input",
-                icon: "input" as const,
-                className: "text-indigo-600 dark:text-indigo-300",
-              }
-            : status === "request"
-              ? {
-                  label: "Request",
-                  icon: "request" as const,
-                  className: "text-guest-foreground",
-                }
-              : status === "limited"
-                ? {
-                    label: "Limited",
-                    icon: "failed" as const,
-                    className: "text-warning-foreground",
-                  }
-                : status === "failed"
-                  ? {
-                      label: "Failed",
-                      icon: "failed" as const,
-                      className: "text-error-foreground",
-                    }
-                  : isWoke
-                    ? {
-                        label: "Woke",
-                        icon: "woke" as const,
-                        className: "text-warning-foreground",
-                      }
-                    : isUnread
-                      ? {
-                          label: "Done",
-                          icon: "done" as const,
-                          className: "text-success-foreground",
-                        }
-                      : null;
+  const runtimeStatus = resolveRowRuntimeStatus({ thread, status, isWoke, isUnread });
+  const topStatus = thread.decision
+    ? {
+        label: decisionStatusLabels[thread.decision.status],
+        icon:
+          thread.decision.status === "discussing"
+            ? ("input" as const)
+            : thread.decision.status === "completed"
+              ? ("done" as const)
+              : ("cancelled" as const),
+        className:
+          thread.decision.status === "discussing"
+            ? "text-warning-foreground"
+            : thread.decision.status === "completed"
+              ? "text-success-foreground"
+              : "text-muted-foreground",
+      }
+    : runtimeStatus;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -819,11 +830,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : thread.modelSelection.model;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
-  const showsScratchMachine = !thread.branch && props.scratchMachineLabel !== null;
+  const showsScratchMachine = !checkoutThread.branch && props.scratchMachineLabel !== null;
 
   const detailsTooltip = (
     <SidebarThreadTooltip
-      thread={thread}
+      thread={checkoutThread}
       project={props.project}
       projectDisplayName={props.projectDisplayName}
       environmentLabel={props.environmentLabel}
@@ -1017,8 +1028,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ) : null;
 
   const accessibility = resolveSidebarRowAccessibility({
-    title: thread.title,
-    statusLabel: topStatus?.label ?? null,
+    title: thread.decision ? `Decision: ${thread.title}` : thread.title,
+    statusLabel:
+      thread.decision && runtimeStatus
+        ? `${topStatus?.label}, ${runtimeStatus.label}`
+        : (topStatus?.label ?? null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -1027,7 +1041,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     <ThreadRenameInput
       title={renamingTitle}
       onTitleChange={onRenameTitleChange}
-      onCommit={() => onCommitRename(threadRef, renamingTitle, thread.title)}
+      onCommit={() => onCommitRename(threadRef, renamingTitle)}
       onCancel={onCancelRename}
     />
   ) : (
@@ -1152,18 +1166,42 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const diff = latestRunDiff(thread);
   // Only the trailing icons would remain, so the row moves them to the title line instead.
   const metaLineEmpty =
-    !thread.branch &&
+    !thread.decision &&
+    !checkoutThread.branch &&
     !showsScratchMachine &&
     prBadge === null &&
     diff === null &&
     runningTerminalIds.length === 0;
-  const metaLine = metaLineEmpty ? null : (
+  const metaLine = thread.decision ? (
+    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-secondary-label">
+      {variant !== "card" ? <DecisionThreadBadge /> : null}
+      <button
+        type="button"
+        className="min-w-0 flex-1 truncate text-left hover:underline"
+        aria-label={`Open source task: ${decisionSource?.title ?? "Source task"}`}
+        onKeyDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (decisionSourceRef) onThreadActivate(decisionSourceRef);
+        }}
+      >
+        Source: {decisionSource?.title ?? "Open source task"}
+      </button>
+      {runtimeStatus ? (
+        <DecisionRuntimeStatus status={runtimeStatus} onDismissWoke={handleAcknowledgeWokeClick} />
+      ) : null}
+      <SidebarProviderStack
+        thread={thread}
+        providerEntryByInstanceId={props.providerEntryByInstanceId}
+      />
+    </div>
+  ) : metaLineEmpty ? null : (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
-      {thread.branch ? (
+      {checkoutThread.branch ? (
         <>
-          <ThreadWorktreeIndicator thread={thread} />
+          <ThreadWorktreeIndicator thread={checkoutThread} />
           <span className="flex min-w-0 flex-1">
-            <MiddleTruncate value={thread.branch} showTitle={false} />
+            <MiddleTruncate value={checkoutThread.branch} showTitle={false} />
           </span>
         </>
       ) : showsScratchMachine ? (
@@ -1209,7 +1247,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : null;
 
   if (variant !== "card") {
-    const multiline = variant === "folder-multiline";
+    const multiline = variant === "folder-multiline" || thread.decision !== undefined;
     const inFolder = variant === "folder" || multiline;
     return (
       <li
@@ -1315,7 +1353,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         />
                         <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
                       </Tooltip>
-                    ) : inFolder && topStatus ? (
+                    ) : (inFolder || thread.decision) && topStatus ? (
                       // Folder rows have no status line, so the status takes the time slot.
                       <span
                         className={cn(
@@ -1454,7 +1492,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
               {pinIndicator}
-              {props.projectDisplayName ? (
+              {thread.decision ? (
+                <DecisionThreadBadge />
+              ) : props.projectDisplayName ? (
                 <span
                   className={cn("min-w-0 flex-1 truncate font-normal text-secondary-label text-xs")}
                 >
@@ -1506,7 +1546,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       ) : (
                         <span
                           className={cn(
-                            "inline-flex items-center gap-1 font-medium",
+                            "inline-flex items-center gap-1 whitespace-nowrap font-medium",
                             topStatus.className,
                           )}
                         >
@@ -1515,11 +1555,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           {topStatus.label}
-                          {status === "preparing" || status === "working" ? (
+                          {!thread.decision && (status === "preparing" || status === "working") ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
                             </span>
-                          ) : status === "waiting" ? (
+                          ) : !thread.decision && status === "waiting" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={thread.latestRun?.completedAt ?? null} />
                             </span>
@@ -1644,13 +1684,31 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
 }) {
   const thread =
     useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+  const threadKey = scopedThreadKey(threadRef);
+  const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
+  const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
+  const runtimeStatus = thread.decision
+    ? resolveRowRuntimeStatus({
+        thread,
+        status: resolveSidebarThreadStatus(thread),
+        isUnread: hasUnseenCompletion({ ...thread, lastVisitedAt }),
+      })
+    : null;
   const accessibility = resolveSidebarRowAccessibility({
-    title: thread.title,
-    statusLabel: null,
+    title: thread.decision ? `Decision: ${thread.title}` : thread.title,
+    statusLabel: thread.decision
+      ? [decisionStatusLabels[thread.decision.status], runtimeStatus?.label]
+          .filter(Boolean)
+          .join(", ")
+      : null,
     projectDisplayName: props.projectDisplayName,
     isActive: props.isRouteActive,
   });
-  const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+  const decisionSourceRef = thread.decision
+    ? scopeThreadRef(thread.environmentId, thread.decision.sourceThreadId)
+    : null;
+  const decisionSource = useQuietThreadShell(decisionSourceRef);
   // Results only drag out as chat context; the row keeps its own listbox attributes.
   const { listeners: dragListeners, setNodeRef: setDragNodeRef } = useDraggable({
     id: scopedThreadKey(threadRef),
@@ -1680,6 +1738,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     JSON.stringify([thread.environmentId, gitCwd]),
     gitStatus.data,
   );
+  const checkoutThread = withoutRemovedCheckout(thread, visibleGitStatus);
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
     effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
     activeWorktreePath: thread.worktreePath,
@@ -1721,10 +1780,9 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
       <Tooltip>
         <TooltipTrigger
           render={
-            <button
+            <div
               ref={rowRef}
               id={props.resultId}
-              type="button"
               role="option"
               tabIndex={-1}
               aria-selected={props.isHighlighted}
@@ -1734,6 +1792,16 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               {...dragListeners}
               onMouseMove={props.onHighlight}
               onClick={props.onSelect}
+              onKeyDown={(event) => {
+                if (
+                  event.target !== event.currentTarget ||
+                  (event.key !== "Enter" && event.key !== " ")
+                )
+                  return;
+                event.preventDefault();
+                event.stopPropagation();
+                props.onSelect();
+              }}
               className={cn(
                 "group/sidebar-row group/v2-row flex min-h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1 text-left text-sm outline-none",
                 props.isHighlighted || props.isRouteActive
@@ -1783,6 +1851,25 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
                 <RelativeTimeLabel timestamp={resolveThreadActivityTimestamp(thread)} />
               </span>
             </span>
+            {thread.decision ? (
+              <span className="flex min-w-0 items-center gap-1 text-xs text-secondary-label">
+                <DecisionThreadBadge />
+                <span className="shrink-0">{decisionStatusLabels[thread.decision.status]}</span>
+                {runtimeStatus ? <DecisionRuntimeStatus status={runtimeStatus} /> : null}
+                {decisionSourceRef ? (
+                  <Link
+                    to="/$environmentId/$threadId"
+                    params={buildThreadRouteParams(decisionSourceRef)}
+                    className="min-w-0 flex-1 truncate hover:underline"
+                    aria-label={`Open source task: ${decisionSource?.title ?? "Source task"}`}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    Source: {decisionSource?.title ?? "Source task"}
+                  </Link>
+                ) : null}
+              </span>
+            ) : null}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 match={{
@@ -1795,7 +1882,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
           </span>
         </TooltipTrigger>
         <SidebarThreadTooltip
-          thread={thread}
+          thread={checkoutThread}
           project={props.project}
           projectDisplayName={props.projectDisplayName}
           environmentLabel={props.environmentLabel}
@@ -1813,3 +1900,74 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     </li>
   );
 });
+
+function resolveRowRuntimeStatus(input: {
+  thread: SidebarThreadSummary;
+  status: ReturnType<typeof resolveSidebarThreadStatus>;
+  isWoke?: boolean;
+  isUnread: boolean;
+}) {
+  const { thread, status, isWoke, isUnread } = input;
+  return status === "preparing" || status === "working"
+    ? {
+        label:
+          status === "preparing"
+            ? "Setting up"
+            : thread.goal?.status === "active"
+              ? "Goal"
+              : thread.decision
+                ? "AI replying"
+                : "Working",
+        icon: "working" as const,
+        className: "text-info-foreground",
+      }
+    : status === "waiting"
+      ? {
+          label: "Waiting",
+          icon: "waiting" as const,
+          className: "text-muted-foreground",
+        }
+      : status === "approval"
+        ? {
+            label: "Approval",
+            icon: "approval" as const,
+            className: "text-warning-foreground",
+          }
+        : status === "input"
+          ? {
+              label: "Input",
+              icon: "input" as const,
+              className: "text-indigo-600 dark:text-indigo-300",
+            }
+          : status === "request"
+            ? {
+                label: "Request",
+                icon: "request" as const,
+                className: "text-guest-foreground",
+              }
+            : status === "limited"
+              ? {
+                  label: "Limited",
+                  icon: "failed" as const,
+                  className: "text-warning-foreground",
+                }
+              : status === "failed"
+                ? {
+                    label: "Failed",
+                    icon: "failed" as const,
+                    className: "text-error-foreground",
+                  }
+                : isWoke
+                  ? {
+                      label: "Woke",
+                      icon: "woke" as const,
+                      className: "text-warning-foreground",
+                    }
+                  : isUnread
+                    ? {
+                        label: thread.decision ? "AI replied" : "Done",
+                        icon: "done" as const,
+                        className: "text-success-foreground",
+                      }
+                    : null;
+}

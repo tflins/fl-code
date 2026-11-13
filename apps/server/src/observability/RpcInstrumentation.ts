@@ -12,6 +12,9 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 // Trace queries and dashboards depend on these labels, including deviations from method prefixes.
 const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.decisionConfirm]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.decisionCancel]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.decisionReopen]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",
@@ -82,6 +85,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverDisableAcpRegistryProvider]: "server",
   [WS_METHODS.serverLogoutAcpRegistry]: "server",
   [WS_METHODS.serverDiscoverSourceControl]: "server",
+  [WS_METHODS.serverCheckSecretSource]: "server",
   [WS_METHODS.serverGetTraceDiagnostics]: "server",
   [WS_METHODS.serverGetProcessDiagnostics]: "server",
   [WS_METHODS.serverGetHostResources]: "server",
@@ -137,6 +141,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.pullRequestsInvalidate]: "pull-requests",
   [WS_METHODS.pullRequestsReportState]: "pull-requests",
   [WS_METHODS.pullRequestsSubscribeRefreshes]: "pull-requests",
+  [WS_METHODS.pullRequestsSubscribeLinkedThreadRefreshes]: "pull-requests",
   [WS_METHODS.pullRequestsReviewerCandidates]: "pull-requests",
   [WS_METHODS.pullRequestsRequestReviewers]: "pull-requests",
   [WS_METHODS.pullRequestsLabelCandidates]: "pull-requests",

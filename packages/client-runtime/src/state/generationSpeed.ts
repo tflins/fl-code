@@ -4,6 +4,8 @@ import {
   type OrchestrationV2ProviderTurn,
 } from "@t3tools/contracts";
 
+export const GENERATION_SPEED_PLACEHOLDER = "≈ … tok/s";
+
 export interface GenerationSpeedPresentation {
   readonly kind: "live" | "average";
   readonly label: string;
@@ -65,7 +67,7 @@ export function presentCompletedTurn(
   const outputTokens = estimate.outputTokens.toLocaleString("en-US");
   return {
     kind: "average",
-    label: `Avg ≈ ${rate} tok/s`,
+    label: `≈ ${rate} tok/s`,
     details:
       `Average estimated output throughput: ${rate} tokens per second. ` +
       `${outputTokens} output tokens over ${durationSeconds} seconds of effective turn time. ` +
@@ -74,6 +76,28 @@ export function presentCompletedTurn(
     outputTokens: estimate.outputTokens,
     durationMs: estimate.durationMs,
     tokensPerSecond,
+  };
+}
+
+export function presentProviderStep(
+  turn: Pick<OrchestrationV2ProviderTurn, "status" | "tokenUsage">,
+): GenerationSpeedPresentation | null {
+  const usage = turn.tokenUsage;
+  if (
+    turn.status !== "running" ||
+    usage?.outputTokens === undefined ||
+    usage.outputDurationMs === undefined ||
+    usage.outputDurationMs < 250
+  )
+    return null;
+  const reading = presentLiveWindow(usage.outputTokens, usage.outputDurationMs);
+  if (reading === null) return null;
+  return {
+    ...reading,
+    details:
+      `Most recent provider-reported output throughput: ${formatRate(reading.tokensPerSecond)} tokens per second. ` +
+      `${usage.outputTokens.toLocaleString("en-US")} output tokens over ${(usage.outputDurationMs / 1000).toFixed(1)} seconds of the same response's observed output interval. ` +
+      "Uses reported output tokens once, including reported reasoning and tool arguments. Confirmed tool waits are excluded; buffered output updates when the response reports its usage. This is not pure decode speed.",
   };
 }
 
@@ -99,11 +123,11 @@ export function presentLiveWindow(
       : Math.round(estimatedTokens).toLocaleString("en-US");
   return {
     kind: "live",
-    label: `Live ≈ ${rate} tok/s`,
+    label: `≈ ${rate} tok/s`,
     details:
-      `Live estimated output throughput: ${rate} tokens per second over the last ${durationSeconds} seconds. ` +
-      `Counts only visible assistant body text, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +
-      "Tool output, thinking summaries, and hidden reasoning are excluded. The completed-turn average instead uses the provider's reported output tokens and effective turn time.",
+      `Most recent estimated output throughput: ${rate} tokens per second over ${durationSeconds} seconds. ` +
+      `Counts streamed assistant text, visible reasoning, and plans, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +
+      "Tool execution output, unstreamed tool arguments, and hidden reasoning are excluded. Observed stream gaps remain included. The completed-turn average instead uses the provider's reported output tokens and effective turn time.",
     outputTokens: estimatedTokens,
     durationMs,
     tokensPerSecond,

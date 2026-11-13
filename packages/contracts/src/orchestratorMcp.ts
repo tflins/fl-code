@@ -4,6 +4,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { AuthMcpClientAccess } from "./auth.ts";
 import {
+  CommandId,
   ContextTransferId,
   EnvironmentId,
   IsoDateTime,
@@ -34,10 +35,11 @@ import {
 } from "./threadPullRequest.ts";
 import { secretRequestPageUrl } from "./secretRequest.ts";
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
-import { ThreadTitleRegeneration } from "./threadTitle.ts";
+import { LastThreadTitleRegeneration, ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
+  OrchestrationV2DecisionStatus,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
@@ -184,7 +186,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
     }),
   ),
   timeoutMs: Schema.optional(Schema.Finite).annotate({
-    description: "Mode 'wait' only. Default 10 min. A timeout does not cancel the child.",
+    description: "Mode 'wait' only. Default 4 min. A timeout does not cancel the child.",
   }),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   runtimeMode: Schema.optional(
@@ -357,8 +359,21 @@ export const OrchestratorMcpThreadPullRequest = Schema.Struct({
   url: TrimmedNonEmptyString,
   source: ThreadPullRequestLinkSource,
   state: Schema.NullOr(PullRequestState),
+  watching: Schema.Boolean,
+  watchStartedAt: Schema.NullOr(IsoDateTime),
 });
 export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullRequest.Type;
+
+/** Background work still open on the thread, as its provider reported it. */
+export const OrchestratorMcpThreadBackgroundTask = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  kind: Schema.Literals(["subagent", "command", "monitor", "background_task"]),
+  description: Schema.optional(TrimmedNonEmptyString),
+  /** The agent waits on this command or monitor. Other kinds always hold the thread. */
+  awaited: Schema.optional(Schema.Literal(true)),
+  childThreadId: Schema.optional(ThreadId),
+});
+export type OrchestratorMcpThreadBackgroundTask = typeof OrchestratorMcpThreadBackgroundTask.Type;
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
   threadId: ThreadId,
@@ -374,11 +389,17 @@ export const OrchestratorMcpThreadListItem = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
+  /** Linked pull requests not yet merged or closed; list_thread_pull_requests has all of them. */
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
+  pullRequestCount: Schema.optional(NonNegativeInt),
   settled: Schema.Boolean,
   settledAt: Schema.NullOr(IsoDateTime),
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
+  /** Absent from linked environments that predate it. */
+  blockedOnThreadWait: Schema.optional(Schema.Boolean),
+  /** Absent from linked environments that predate it. */
+  pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
   itemCount: NonNegativeInt,
@@ -417,18 +438,34 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   itemId: Schema.optional(TurnItemId),
   textOffset: Schema.optional(NonNegativeInt),
   view: Schema.optional(Schema.Literals(["messages", "activity"])),
-  afterPosition: Schema.optional(NonNegativeInt),
-  limit: Schema.optional(clampedPositiveInt(100)).annotate({
-    description: "Max items, 1 to 100.",
-  }),
-  runLimit: Schema.optional(clampedPositiveInt(50)).annotate({
-    description: "Max recent runs, 1 to 50.",
-  }),
-  maxCharsPerItem: Schema.optional(clampedPositiveInt(50_000)).annotate({
-    description: "Max chars per item, 1 to 50000.",
+  afterPosition: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(-1))),
+  beforePosition: Schema.optional(NonNegativeInt),
+  limit: Schema.optional(clampedPositiveInt(100)).annotate({ description: "Max 100." }),
+  runLimit: Schema.optional(clampedPositiveInt(50)).annotate({ description: "Max 50." }),
+  maxCharsPerItem: Schema.optional(clampedPositiveInt(20_000)).annotate({
+    description: "Max 20000.",
   }),
 });
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
+
+export const OrchestratorMcpDecision = Schema.Struct({
+  sourceThreadId: ThreadId,
+  requestKey: Schema.optional(Schema.String),
+  question: Schema.String,
+  options: Schema.optional(Schema.Array(Schema.String)),
+  context: Schema.optional(Schema.String),
+  status: OrchestrationV2DecisionStatus,
+  revision: NonNegativeInt,
+  finalAnswer: Schema.NullOr(Schema.String),
+  confirmationId: Schema.NullOr(CommandId),
+  sourceMessageId: Schema.NullOr(MessageId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
+  cancelledAt: Schema.NullOr(IsoDateTime),
+  cancellationNotified: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpDecision = typeof OrchestratorMcpDecision.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
   threadId: ThreadId,
@@ -445,12 +482,17 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   linkedPullRequest: Schema.NullOr(ThreadLinkedPullRequest),
+  /** Open linked pull requests, on the first page only; list_thread_pull_requests has all of them. */
   pullRequests: Schema.optional(Schema.Array(OrchestratorMcpThreadPullRequest)),
+  pullRequestCount: Schema.optional(NonNegativeInt),
   titleRegeneration: Schema.NullOr(ThreadTitleRegeneration),
+  lastTitleRegeneration: Schema.optional(Schema.NullOr(LastThreadTitleRegeneration)),
   branch: Schema.NullOr(Schema.String),
   worktreePath: Schema.NullOr(Schema.String),
   parentThreadId: Schema.NullOr(ThreadId),
   relationshipToParent: Schema.NullOr(Schema.Literals(["fork", "subagent"])),
+  /** Present only on decision threads. */
+  decision: Schema.optional(OrchestratorMcpDecision),
   runCount: NonNegativeInt,
   itemCount: NonNegativeInt,
   pendingRequestCount: NonNegativeInt,
@@ -459,6 +501,10 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
   settledAt: Schema.NullOr(IsoDateTime),
   snoozed: Schema.Boolean,
   snoozedUntil: Schema.NullOr(IsoDateTime),
+  /** Absent from linked environments that predate it. */
+  blockedOnThreadWait: Schema.optional(Schema.Boolean),
+  /** Absent from linked environments that predate it. */
+  pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestratorMcpThreadBackgroundTask)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -504,8 +550,50 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
   nextPosition: Schema.NullOr(NonNegativeInt),
   hasMore: Schema.Boolean,
+  /** null when nothing is older than the page. Missing from peers that only read forward. */
+  earlierPosition: Schema.optional(Schema.NullOr(NonNegativeInt)),
 });
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
+
+export const OrchestratorMcpDecisionInput = Schema.Struct({
+  action: Schema.Literals(["create", "read"]),
+  clientRequestId: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)).annotate({
+      description:
+        "create: stable identity for this source issue. Reuse it to return the existing discussion; its initial question and context stay unchanged.",
+    }),
+  ),
+  options: Schema.optional(
+    Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(512))).check(Schema.isMaxLength(6)),
+  ),
+  environmentId: OrchestratorMcpEnvironmentTarget,
+  /** `read`: the decision thread. Omit to read this thread when it is one. */
+  threadId: Schema.optional(ThreadId),
+  /** `create`: the execution thread with the question. Omit for this thread. */
+  sourceThreadId: Schema.optional(ThreadId),
+  question: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(4_000)).annotate({
+      description: "create: the one question to discuss. Reuse the same text when retrying.",
+    }),
+  ),
+  context: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(16_000)).annotate({
+      description: "create: only the facts the decision depends on, never a transcript.",
+    }),
+  ),
+  title: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+});
+export type OrchestratorMcpDecisionInput = typeof OrchestratorMcpDecisionInput.Type;
+
+export const OrchestratorMcpDecisionResult = Schema.Struct({
+  threadId: ThreadId,
+  link: Schema.optional(Schema.String),
+  created: Schema.Boolean,
+  sourceThreadId: ThreadId,
+  sourceAvailable: Schema.Boolean,
+  decision: OrchestratorMcpDecision,
+});
+export type OrchestratorMcpDecisionResult = typeof OrchestratorMcpDecisionResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
@@ -673,13 +761,14 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
-      description: "Default true: runs post in this thread. False: new thread per run.",
+      description:
+        "Post here, else new thread per run. Unset: true in own project, else false; updates keep it.",
     }),
   ),
   freshSession: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "Runs share one thread but each starts a fresh session without earlier runs' context. Unbound: the first run makes the thread.",
+        "Runs share one thread but each starts a fresh session. Unbound: the first run makes the thread.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),

@@ -124,6 +124,8 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
     readonly latestLocalTurnOrdinal?: number | null;
   };
   readonly httpSnapshot?: ThreadSnapshotLoadResult;
+  /** Answers per load call; the last one repeats. Overrides `httpSnapshot`. */
+  readonly httpSnapshots?: readonly ThreadSnapshotLoadResult[];
   /** The test sends the completion marker itself instead of the fake server sending it first. */
   readonly completionMarker?: boolean;
   readonly resumeCache?: NonNullable<Parameters<typeof makeEnvironmentThreadState>[1]>;
@@ -199,11 +201,12 @@ const makeHarness = Effect.fn("TestEnvironmentThreads.makeHarness")(function* (o
   );
   const snapshotLoader = ThreadSnapshotLoader.ThreadSnapshotLoader.of({
     load: (_prepared, threadId) =>
-      Ref.update(loaderCalls, (count) => count + 1).pipe(
-        Effect.as(
+      Ref.updateAndGet(loaderCalls, (count) => count + 1).pipe(
+        Effect.map((count) =>
           threadId === THREAD_ID
-            ? (options?.httpSnapshot ??
-                ({ _tag: "unavailable" } satisfies ThreadSnapshotLoadResult))
+            ? (options?.httpSnapshots?.[Math.min(count, options.httpSnapshots.length) - 1] ??
+              options?.httpSnapshot ??
+              ({ _tag: "unavailable" } satisfies ThreadSnapshotLoadResult))
             : ({ _tag: "unavailable" } satisfies ThreadSnapshotLoadResult),
         ),
       ),
@@ -1005,6 +1008,27 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect("keeps asking a mounted thread over HTTP after a miss until it exists", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        httpSnapshots: [
+          { _tag: "missing" },
+          { _tag: "missing" },
+          {
+            _tag: "present",
+            snapshot: { snapshotSequence: CACHED_SNAPSHOT_SEQUENCE, projection: BASE_PROJECTION },
+          },
+        ],
+      });
+      yield* awaitThreadState(harness.observed, (value) => value.status === "deleted");
+      yield* TestClock.adjust("250 millis");
+      yield* TestClock.adjust("500 millis");
+      const state = yield* awaitThreadState(harness.observed, (value) => value.status === "live");
+      expect(Option.getOrThrow(state.data)).toEqual(BASE_PROJECTION);
+      expect(yield* Ref.get(harness.loaderCalls)).toBe(3);
+    }),
+  );
+
   it.effect.each([
     // The HTTP retry decides, so a missing thread never flashes an error.
     {
@@ -1076,7 +1100,7 @@ describe("EnvironmentThreads", () => {
       let configReads = 0;
       const harness = yield* makeHarness({
         httpSnapshot: { _tag: "missing" },
-        // The retry's config read dies too, so a stale flag would resubscribe forever.
+        // The retry's config read dies too, so a stale flag would resubscribe without backing off.
         initialConfig: Effect.suspend(() =>
           ++configReads === 1
             ? Effect.succeed({ threadSnapshotPagination: true })
@@ -1256,6 +1280,66 @@ describe("EnvironmentThreads", () => {
           message: "History did not advance.",
         });
         expect((yield* SubscriptionRef.get(harness.threadState)).history.loading).toBe(false);
+      }),
+    );
+    const boundary = (fields: object, id = "boundary", ordinal = 2) => ({
+      ...command(id, "completed", 0, ordinal),
+      ...fields,
+    });
+    const message = (
+      inputIntent: "turn_start" | "steer",
+      createdBy: "agent" | "user",
+      id = "boundary",
+      ordinal = 2,
+    ) =>
+      boundary(
+        {
+          type: "user_message",
+          messageId: MessageId.make(id),
+          inputIntent,
+          createdBy,
+          creationSource: "mcp",
+          text: "Run every check",
+          attachments: [],
+        },
+        id,
+        ordinal,
+      );
+    it.effect.each([
+      ["an agent-started turn", message("turn_start", "agent"), ["3"]],
+      [
+        "a notification",
+        boundary({
+          type: "notification",
+          source: { kind: "delegated_task", taskIds: [] },
+          outcome: "completed",
+          summary: "Checks finished",
+        }),
+        ["3"],
+      ],
+      ["a steer, paging on to its turn", message("steer", "user"), ["3", "2", "1"]],
+    ] as const)("stops paging earlier history at %s", ([, item, expected]) =>
+      Effect.gen(function* () {
+        const pages: Record<string, ReadonlyArray<unknown>> = {
+          "3": [item],
+          "2": [command("work-1", "completed", 0, 1)],
+          "1": [message("turn_start", "user", "opener", 0)],
+        };
+        const requests: string[] = [];
+        const harness = yield* makeHarness({
+          cached: cachedItem(command("tail", "completed", 0, 3)),
+          cachedHistory: { historyCursor: "3", hasMoreHistory: true },
+          historyHttpClient: HttpClient.make((request, url) => {
+            const cursor = url.searchParams.get("cursor")!;
+            requests.push(cursor);
+            const items = (pages[cursor] ?? []) as ReadonlyArray<OrchestrationV2TurnItem>;
+            return Effect.succeed(
+              historyPage(request, items.map(localRow), String(Number(cursor) - 1)),
+            );
+          }),
+        });
+        expect(yield* harness.loadEarlier()).toEqual({ _tag: "loaded" });
+        expect(requests).toEqual(expected);
       }),
     );
     it.effect("loads deferred work on demand and resumes a failed page", () =>
@@ -2530,6 +2614,43 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
+  it.effect(
+    "resubscribes after a snapshot decode defect ends the thread subscription (#23041)",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ httpSnapshot: { _tag: "unavailable" } });
+        yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+          Stream.filter((count) => count >= 1),
+          Stream.runHead,
+        );
+        yield* Queue.offer(harness.inputs, TEST_DEFECT);
+        const failed = yield* awaitThreadState(harness.observed, (value) =>
+          Option.isSome(value.error),
+        );
+        expect(failed.status).toBe("empty");
+        expect(Option.getOrThrow(failed.error)).toBe("Could not synchronize the thread.");
+
+        yield* TestClock.adjust("60 seconds");
+        expect(yield* SubscriptionRef.get(harness.subscriptionCount)).toBe(2);
+
+        yield* Queue.offer(
+          harness.inputs,
+          snapshot({
+            ...BASE_PROJECTION,
+            thread: { ...BASE_PROJECTION.thread, title: "Recovered thread" },
+          }),
+        );
+        const recovered = yield* awaitThreadState(
+          harness.observed,
+          (value) =>
+            value.status === "live" &&
+            Option.isSome(value.data) &&
+            value.data.value.thread.title === "Recovered thread",
+        );
+        expect(Option.isNone(recovered.error)).toBe(true);
+      }),
+  );
+
   it.effect("keeps replayed updates synchronizing until the completion marker arrives", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
@@ -2566,43 +2687,49 @@ describe("EnvironmentThreads", () => {
     () =>
       Effect.gen(function* () {
         const harness = yield* makeHarness({ cached: BASE_PROJECTION });
-        yield* Queue.offerAll(harness.inputs, [
-          ...liveStartEvents(liveSequence(1)),
-          liveAssistantEvent({
-            sequence: liveSequence(5),
+        const events = [...liveStartEvents(liveSequence(1))];
+        for (const [index, atMs, text] of [
+          [0, 0, "a".repeat(400)],
+          [1, 300, "a".repeat(800)],
+          [2, 800, "a".repeat(1_600)],
+        ] as const) {
+          events.push(liveAssistantMessageEvent(liveSequence(5 + index * 2), text, atMs));
+          const item = liveAssistantEvent({
+            sequence: liveSequence(6 + index * 2),
             itemId: "live-assistant",
-            text: "a",
-            atMs: 0,
-          }),
-          liveAssistantMessageEvent(liveSequence(6), "a".repeat(40), 300),
-          liveAssistantEvent({
-            sequence: liveSequence(7),
-            itemId: "live-assistant",
-            text: "aa",
-            atMs: 300,
-          }),
-          liveAssistantEvent({
-            sequence: liveSequence(8),
-            itemId: "live-assistant",
-            text: "aaaa",
-            atMs: 800,
-          }),
-        ]);
+            text,
+            atMs,
+          });
+          if (
+            item.event.type !== "turn-item.updated" ||
+            item.event.payload.type !== "assistant_message"
+          )
+            throw new Error("Expected an assistant turn item");
+          events.push({
+            ...item,
+            event: {
+              ...item.event,
+              payload: { ...item.event.payload, text: "", textOmitted: true },
+            },
+          });
+        }
+        events.push(liveProviderTurnEvent(liveSequence(11), "completed"));
+        yield* Queue.offerAll(harness.inputs, events);
 
         const live = yield* awaitThreadState(
           harness.observed,
-          (value) => value.liveGenerationSpeed !== null,
+          (value) => value.sequence === liveSequence(11),
         );
         expect(live.liveGenerationSpeed).toMatchObject({
           kind: "live",
-          label: "Live ≈ 0.9 tok/s",
+          label: "≈ 375 tok/s",
           durationMs: 800,
         });
-        expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(0.75, 10);
+        expect(live.liveGenerationSpeed?.outputTokens).toBeCloseTo(300, 10);
       }),
   );
 
-  it.effect("ignores completed snapshots and clears on provider-turn termination", () =>
+  it.effect("retains the last reading after assistant or provider completion", () =>
     Effect.gen(function* () {
       const completedSnapshot = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(completedSnapshot.inputs, [
@@ -2628,7 +2755,7 @@ describe("EnvironmentThreads", () => {
       ]);
       yield* awaitThreadState(
         completedSnapshot.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(
         completedSnapshot.inputs,
@@ -2640,10 +2767,11 @@ describe("EnvironmentThreads", () => {
           streaming: false,
         }),
       );
-      yield* awaitThreadState(
+      const completed = yield* awaitThreadState(
         completedSnapshot.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.sequence === liveSequence(8),
       );
+      expect(completed.liveGenerationSpeed?.durationMs).toBe(800);
 
       const providerTerminal = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(providerTerminal.inputs, [
@@ -2669,16 +2797,17 @@ describe("EnvironmentThreads", () => {
       ]);
       yield* awaitThreadState(
         providerTerminal.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
       yield* Queue.offer(
         providerTerminal.inputs,
         liveProviderTurnEvent(liveSequence(8), "completed"),
       );
-      yield* awaitThreadState(
+      const terminal = yield* awaitThreadState(
         providerTerminal.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.sequence === liveSequence(8),
       );
+      expect(terminal.liveGenerationSpeed?.durationMs).toBe(800);
     }),
   );
 
@@ -2708,7 +2837,7 @@ describe("EnvironmentThreads", () => {
       ]);
       const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed !== null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
 
       yield* Queue.offer(
@@ -2755,14 +2884,17 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
-
-      yield* Queue.offer(harness.wakeups, "application-active");
-      const resumed = yield* awaitThreadState(
+      const live = yield* awaitThreadState(
         harness.observed,
-        (value) => value.liveGenerationSpeed === null,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
       );
-      expect(resumed.liveGenerationSpeed).toBeNull();
+      yield* Queue.offer(harness.wakeups, "application-active");
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 2),
+        Stream.runHead,
+      );
+      const resumed = yield* SubscriptionRef.get(harness.threadState);
+      expect(resumed.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
@@ -2807,7 +2939,7 @@ describe("EnvironmentThreads", () => {
     }),
   );
 
-  it.effect("expires a quiet live reading without inventing output", () =>
+  it.effect("retains the last reading while output is quiet without counting the wait", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(harness.inputs, [
@@ -2831,19 +2963,30 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
+      );
 
       yield* TestClock.adjust("1500 millis");
-
-      const expired = yield* awaitThreadState(
-        harness.observed,
-        (value) => value.liveGenerationSpeed === null,
+      yield* Queue.offer(
+        harness.inputs,
+        liveAssistantEvent({
+          sequence: liveSequence(8),
+          itemId: "live-assistant",
+          text: "aaaa",
+          atMs: 3_000,
+        }),
       );
-      expect(expired.liveGenerationSpeed).toBeNull();
+      const quiet = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.sequence === liveSequence(8),
+      );
+      expect(quiet.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
-  it.effect("clears the live reading on completion or a replacement snapshot", () =>
+  it.effect("retains the reading on completion and through a replacement snapshot", () =>
     Effect.gen(function* () {
       const completed = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(completed.inputs, [
@@ -2867,9 +3010,16 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed !== null);
+      yield* awaitThreadState(
+        completed.observed,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
+      );
       yield* Queue.offer(completed.inputs, liveRunEvent(liveSequence(8), "completed"));
-      yield* awaitThreadState(completed.observed, (value) => value.liveGenerationSpeed === null);
+      const finished = yield* awaitThreadState(
+        completed.observed,
+        (value) => value.sequence === liveSequence(8),
+      );
+      expect(finished.liveGenerationSpeed?.durationMs).toBe(800);
 
       const snapshotted = yield* makeHarness({ cached: BASE_PROJECTION });
       yield* Queue.offerAll(snapshotted.inputs, [
@@ -2893,13 +3043,20 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed !== null);
+      const live = yield* awaitThreadState(
+        snapshotted.observed,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
+      );
       yield* Queue.offer(snapshotted.inputs, snapshot(BASE_PROJECTION, 20));
-      yield* awaitThreadState(snapshotted.observed, (value) => value.liveGenerationSpeed === null);
+      const restored = yield* awaitThreadState(
+        snapshotted.observed,
+        (value) => value.sequence === 20,
+      );
+      expect(restored.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
-  it.effect("clears the live reading when the event stream fails", () =>
+  it.effect("retains the reading through disconnect, reconnect and stream failure", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({ cached: BASE_PROJECTION, completionMarker: true });
       yield* Queue.offer(harness.inputs, synchronized());
@@ -2925,13 +3082,40 @@ describe("EnvironmentThreads", () => {
           atMs: 800,
         }),
       ]);
-      yield* awaitThreadState(harness.observed, (value) => value.liveGenerationSpeed !== null);
-
+      const live = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.sequence === liveSequence(7) && value.liveGenerationSpeed !== null,
+      );
+      yield* SubscriptionRef.set(harness.supervisorState, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "offline" as const,
+      });
+      yield* SubscriptionRef.set(harness.supervisorSession, Option.none());
+      const disconnected = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "cached",
+      );
+      expect(disconnected.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
+      yield* SubscriptionRef.set(harness.supervisorState, {
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected" as const,
+      });
+      yield* harness.replaceSession;
+      yield* SubscriptionRef.changes(harness.subscriptionCount).pipe(
+        Stream.filter((count) => count === 2),
+        Stream.runHead,
+      );
+      yield* Queue.offer(harness.inputs, synchronized());
+      const reconnected = yield* awaitThreadState(
+        harness.observed,
+        (value) => value.status === "live",
+      );
+      expect(reconnected.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
       yield* Queue.offer(harness.inputs, new Error("stream failed"));
       const failed = yield* awaitThreadState(harness.observed, (value) =>
         Option.isSome(value.error),
       );
-      expect(failed.liveGenerationSpeed).toBeNull();
+      expect(failed.liveGenerationSpeed).toBe(live.liveGenerationSpeed);
     }),
   );
 
@@ -2961,6 +3145,7 @@ describe("EnvironmentThreads", () => {
         environmentId: TARGET.environmentId,
         threadId: THREAD_ID,
         pendingRequestIds: [],
+        unansweredRequestIds: [],
       });
       expect(yield* Queue.size(announced)).toBe(0);
     }),

@@ -1,12 +1,18 @@
+import appCss from "../index.css?inline";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import * as shelfHooks from "../state/olderSettledShelf";
+import { createWorkspaceFocusController, workspaceAreaProps } from "../lib/workspaceFocus";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   DEFAULT_CLIENT_SETTINGS,
   EnvironmentId,
   ProjectId,
+  RunId,
   ThreadId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -16,18 +22,34 @@ import { makeThreadFixture } from "../test-fixtures";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
-import { useProjects, useQuietThreadShells } from "../state/entities";
+import {
+  readEnvironmentServerConfigLoaded,
+  useProjects,
+  useServerConfigs,
+  useQuietThreadShell,
+  useQuietThreadShells,
+  useThreadShell,
+} from "../state/entities";
+import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
+import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
+import { useUiStateStore } from "../uiStateStore";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
 import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
-import { SortableThreadRow } from "./sidebar/SidebarThreadRow";
+import { SidebarSearchResultRow, SortableThreadRow } from "./sidebar/SidebarThreadRow";
 import { SidebarProvider } from "./ui/sidebar";
 
+vi.mock(import("../state/olderSettledShelf"), async (original) => {
+  const actual = await original();
+  return { ...actual, useOlderSettledShelf: vi.fn(actual.useOlderSettledShelf) };
+});
 vi.mock("../state/entities", { spy: true });
 vi.mock("../hooks/useHandleNewThread", { spy: true });
 vi.mock("../hooks/useThreadRouteTarget", { spy: true });
 vi.mock("./sidebar/SidebarThreadRow", { spy: true });
+vi.mock("../state/session", { spy: true });
+vi.mock("../state/use-orchestration-command", { spy: true });
 vi.mock(import("../state/server"), async (original) => {
   const { Atom } = await import("effect/reactivity");
   const { compileResolvedKeybindingsConfig } = await import("@t3tools/shared/keybindings");
@@ -121,6 +143,135 @@ function threadShell(projectId: ProjectId, index: number): EnvironmentThreadShel
   });
 }
 
+it.each([
+  { layout: "card", state: "replied" },
+  { layout: "compact", state: "replied" },
+  { layout: "search", state: "replied" },
+  { layout: "card", state: "woke" },
+  { layout: "compact", state: "woke" },
+] as const)(
+  "keeps decision status, runtime feedback and source actions distinct: $layout $state",
+  async (scenario) => {
+    using stack = new DisposableStack();
+    const previousSettings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(previousSettings));
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      boringSidebarEnabled: scenario.layout === "compact",
+    });
+    const previousVisits = useUiStateStore.getState().threadLastVisitedAtById;
+    stack.defer(() => useUiStateStore.setState({ threadLastVisitedAtById: previousVisits }));
+    const activeProject = project("decision-project");
+    const source = makeThreadFixture({
+      environmentId: activeProject.environmentId,
+      projectId: activeProject.id,
+      id: ThreadId.make("execution-task"),
+      title: "Execution task",
+    });
+    const now = "2026-11-13T00:00:00.000Z";
+    const decision = makeThreadFixture({
+      environmentId: source.environmentId,
+      projectId: source.projectId,
+      id: ThreadId.make("decision-task"),
+      title: "Retention policy",
+      ...(scenario.state === "woke" ? {} : { lastVisitedAt: "2026-11-12T00:00:00.000Z" }),
+      snoozedUntil: scenario.state === "woke" ? now : null,
+      runtime: {
+        status: "completed",
+        activeRunId: null,
+        providerInstanceId: source.providerInstanceId,
+        providerName: null,
+        lastError: null,
+        updatedAt: now,
+      },
+      latestRun: {
+        runId: RunId.make("decision-reply"),
+        status: "completed",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        assistantMessageId: null,
+      },
+      decision: {
+        sourceThreadId: source.id,
+        question: "How long should records be kept?",
+        status: "discussing",
+        revision: 1,
+        createdAt: DateTime.makeUnsafe(now),
+        updatedAt: DateTime.makeUnsafe(now),
+      },
+    });
+    vi.mocked(useProjects).mockReturnValue([activeProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue([source, decision]);
+    vi.mocked(useQuietThreadShell).mockImplementation((ref) =>
+      ref?.threadId === source.id ? source : null,
+    );
+    vi.mocked(useThreadShell).mockReturnValue(null);
+    vi.mocked(readEnvironmentServerConfigLoaded).mockReturnValue(false);
+    vi.mocked(useThreadRouteTarget).mockReturnValue(null);
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: { environmentId: source.environmentId, projectId: source.projectId },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef: null,
+    });
+    const onSelect = vi.fn();
+    await using screen = await render(
+      scenario.layout === "search" ? (
+        <SidebarSearchResultRow
+          isSettled={false}
+          thread={decision}
+          project={null}
+          projectDisplayName={null}
+          environmentLabel={null}
+          environmentMachine="laptop"
+          providerEntryByInstanceId={new Map()}
+          isHighlighted={false}
+          isRouteActive={false}
+          resultId="decision-search-result"
+          searchMatch={null}
+          searchQuery="Retention"
+          onHighlight={() => {}}
+          onSelect={onSelect}
+          onFileDropThreads={() => {}}
+        />
+      ) : (
+        <SidebarProvider>
+          <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+        </SidebarProvider>
+      ),
+    );
+    await expect.element(screen.getByText("Awaiting you", { exact: true })).toBeVisible();
+    if (scenario.state === "woke") {
+      const dismiss = screen.getByRole("button", { name: "Dismiss Woke notification" });
+      await expect.element(dismiss).toBeVisible();
+      await userEvent.click(dismiss);
+      await expect.element(dismiss).not.toBeInTheDocument();
+      await expect.element(screen.getByText("Awaiting you", { exact: true })).toBeVisible();
+    } else {
+      await expect.element(screen.getByText("AI replied", { exact: true })).toBeVisible();
+    }
+    const sourceLink = screen.getByRole(scenario.layout === "search" ? "link" : "button", {
+      name: "Open source task: Execution task",
+    });
+    await expect.element(sourceLink).toBeVisible();
+    if (scenario.layout === "search") {
+      await userEvent.click(screen.getByRole("option"));
+      await userEvent.keyboard("{Enter}");
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      onSelect.mockClear();
+      await userEvent.click(sourceLink);
+      await vi.waitFor(() =>
+        expect(screen.router?.state.location.pathname).toBe("/local/execution-task"),
+      );
+      expect(onSelect).not.toHaveBeenCalled();
+    }
+  },
+);
+
 describe("sidebar render isolation", () => {
   // regression: #33100 Cmd+J re-rendered every sidebar row, which took hundreds of ms with many threads
   it("does not re-render thread rows when a quick Mod shortcut opens and focuses the terminal", async () => {
@@ -131,6 +282,7 @@ describe("sidebar render isolation", () => {
       environmentId: activeProject.environmentId,
       threadId: threads[0]!.id,
     };
+    threads.unshift(threadShell(activeProject.id, 100));
     vi.mocked(useProjects).mockReturnValue([activeProject]);
     vi.mocked(useQuietThreadShells).mockReturnValue(threads);
     vi.mocked(useThreadRouteTarget).mockReturnValue({ kind: "server", threadRef: routeThreadRef });
@@ -188,5 +340,153 @@ describe("sidebar render isolation", () => {
     await userEvent.keyboard(`{/${modifier}}`);
     expect(rowRenders()).toBeGreaterThan(beforeRelease);
     expect(jumpLabelsSince(beforeRelease)).toEqual([]);
+  });
+});
+
+describe("sidebar thread rename", () => {
+  // regression: #35151 an untouched rename wrote back the title it opened with over a newer one
+  it.each(["{Enter}", "{Tab}"])(
+    "ending an untouched rename with %s keeps a title that arrived while it was open",
+    async (finish) => {
+      const activeProject = project("active");
+      const routeThreadRef: ScopedThreadRef = {
+        environmentId: activeProject.environmentId,
+        threadId: ThreadId.make("thread-0"),
+      };
+      const shellTitled = (title: string) => ({ ...threadShell(activeProject.id, 0), title });
+      const updateMetadata = vi.fn().mockResolvedValue({ _tag: "Success" });
+      vi.mocked(useOrchestrationCommand).mockReturnValue(updateMetadata);
+      vi.mocked(readEnvironmentScope).mockReturnValue(true);
+      vi.mocked(useEnvironmentScope).mockReturnValue(true);
+      vi.mocked(useProjects).mockReturnValue([activeProject]);
+      vi.mocked(useQuietThreadShells).mockReturnValue([shellTitled("Fix the login redirect")]);
+      vi.mocked(useThreadRouteTarget).mockReturnValue({
+        kind: "server",
+        threadRef: routeThreadRef,
+      });
+      vi.mocked(useHandleNewThread).mockReturnValue({
+        activeDraftThread: null,
+        activeThread: null,
+        defaultProjectRef: {
+          environmentId: activeProject.environmentId,
+          projectId: activeProject.id,
+        },
+        defaultProjectFallbackReady: true,
+        handleNewThread: vi.fn().mockResolvedValue(null),
+        routeDraftId: null,
+        routeThreadRef,
+      });
+      const tree = () => (
+        <SidebarProvider>
+          <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+        </SidebarProvider>
+      );
+      await using screen = await render(tree());
+      await userEvent.dblClick(screen.getByText("Fix the login redirect").first());
+      const input = screen.getByRole("textbox", { name: "Thread title" });
+      await expect.element(input).toHaveValue("Fix the login redirect");
+
+      vi.mocked(useQuietThreadShells).mockReturnValue([shellTitled("Generated title")]);
+      await screen.rerender(tree());
+      await userEvent.keyboard(finish);
+
+      await expect.element(input).not.toBeInTheDocument();
+      expect(updateMetadata).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("sidebar settled pagination", () => {
+  it("keeps the viewport in place when showing more settled threads", async () => {
+    using stack = new DisposableStack();
+    const style = document.createElement("style");
+    style.textContent = appCss;
+    document.head.append(style);
+    stack.defer(() => style.remove());
+    const focusController = createWorkspaceFocusController(document);
+    stack.defer(() => focusController.dispose());
+    let loading = false;
+    const originalShelf = vi.mocked(shelfHooks.useOlderSettledShelf).getMockImplementation()!;
+    using _shelf = vi.spyOn(shelfHooks, "useOlderSettledShelf").mockImplementation((input) => ({
+      ...originalShelf(input),
+      loading,
+      retry: () => {
+        loading = true;
+      },
+    }));
+    const activeProject = project("active");
+    const threads = Array.from({ length: 70 }, (_, index) =>
+      makeThreadFixture({
+        environmentId: activeProject.environmentId,
+        projectId: activeProject.id,
+        id: ThreadId.make(`settled-${index}`),
+        title: `Settled thread ${index}`,
+        settledOverride: "settled",
+        settledAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    threads.unshift(threadShell(activeProject.id, 100));
+    vi.mocked(useProjects).mockReturnValue([activeProject]);
+    vi.mocked(useQuietThreadShells).mockReturnValue(threads);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({
+      kind: "server",
+      threadRef: { environmentId: activeProject.environmentId, threadId: threads[0]!.id },
+    });
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: {
+        environmentId: activeProject.environmentId,
+        projectId: activeProject.id,
+      },
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn().mockResolvedValue(null),
+      routeDraftId: null,
+      routeThreadRef: { environmentId: activeProject.environmentId, threadId: threads[0]!.id },
+    });
+    vi.mocked(useServerConfigs).mockReturnValue(
+      new Map([
+        [
+          activeProject.environmentId,
+          {
+            scratchWorkspaceRoot: null,
+            shellThreadFamilies: false,
+          } as unknown as EnvironmentServerConfig,
+        ],
+      ]),
+    );
+    await using screen = await render(
+      <SidebarProvider
+        {...workspaceAreaProps("sidebar", 0, "Threads")}
+        style={{ height: 400, minHeight: 400 }}
+      >
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>,
+    );
+    const shelf = screen.container.querySelector<HTMLElement>(
+      '[data-sidebar-row="shelf:settled"]',
+    )!;
+    if (shelf.getAttribute("aria-expanded") === "false") await act(() => shelf.click());
+    const more = screen.getByRole("button", { name: "Show 25 more", exact: true });
+    await expect.element(more).toBeInTheDocument();
+    const moreButton = more.element() as HTMLButtonElement;
+    const viewport = moreButton.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')!;
+    viewport.style.height = "300px";
+    viewport.style.maxHeight = "300px";
+    moreButton.scrollIntoView({ block: "nearest" });
+    const before = viewport.scrollTop;
+    expect(before).toBeGreaterThan(0);
+    moreButton.focus({ preventScroll: true });
+    await act(() => moreButton.click());
+    await expect
+      .element(screen.getByRole("button", { name: "Loading", exact: true }))
+      .toBeInTheDocument();
+    await expect
+      .element(screen.getByRole("button", { name: "Loading", exact: true }))
+      .toHaveFocus();
+    expect(viewport.scrollTop).toBe(before);
+    const loadedRows = screen.container.querySelectorAll("[data-thread-item]").length;
+    await act(() => moreButton.click());
+    expect(screen.container.querySelectorAll("[data-thread-item]")).toHaveLength(loadedRows);
   });
 });
