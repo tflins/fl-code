@@ -438,7 +438,7 @@ it("shows fresh streaming throughput in the composer and replaces it with the co
         rootNodeId: nodeId,
         providerInstanceId: run.providerInstanceId,
         providerThreadId,
-        providerTurnId,
+        providerTurnId: null,
         reason: "initial",
         status: "running",
         startedAt: at(0),

@@ -75,7 +75,7 @@ function liveProjection(
         rootNodeId: NodeId.make("node-1"),
         providerInstanceId: ProviderInstanceId.make("codex"),
         providerThreadId: PROVIDER_THREAD_ID,
-        providerTurnId,
+        providerTurnId: null,
         reason: "initial",
         status: overrides.attemptStatus ?? "running",
         startedAt: at(0),
@@ -586,22 +586,40 @@ describe("live generation speed window", () => {
 
   it("does not let text from an older provider turn take over the current window", () => {
     const tracker = makeLiveGenerationSpeedTracker();
+    const projection = liveProjection();
+    const currentTurn = projection.providerTurns[0]!;
+    const oldTurnId = ProviderTurnId.make("turn-old");
+    const multipleTurns = {
+      ...projection,
+      providerTurns: [{ ...currentTurn, id: oldTurnId, ordinal: 0 }, currentTurn],
+    };
     tracker.observeBatch([assistantEvent({ id: "a", text: "a", atMs: 0 })]);
     tracker.observeBatch([assistantEvent({ id: "a", text: "aa", atMs: 300 })]);
     const published = tracker.observeBatch([
       assistantEvent({ id: "a", text: "aaaa", atMs: 800 }),
     ]).presentation;
 
-    const oldTurn = tracker.observeBatch([
-      assistantEvent({
-        id: "old",
-        text: "a".repeat(40),
-        atMs: 1_000,
-        providerTurnId: ProviderTurnId.make("turn-old"),
-      }),
-    ]);
+    const oldTurn = tracker.observeBatch(
+      [
+        assistantEvent({
+          id: "old",
+          text: "a".repeat(40),
+          atMs: 1_000,
+          providerTurnId: oldTurnId,
+        }),
+      ],
+      multipleTurns,
+    );
     expect(oldTurn.sawAssistantText).toBe(false);
     expect(oldTurn.presentation).toBe(published);
+
+    const completed = tracker.observeBatch([], {
+      ...multipleTurns,
+      providerTurns: multipleTurns.providerTurns.map((turn) =>
+        turn.id === currentTurn.id ? { ...turn, status: "completed" } : turn,
+      ),
+    });
+    expect(completed.presentation).toBeNull();
   });
 
   it("clears instead of publishing when streaming text is rewritten", () => {

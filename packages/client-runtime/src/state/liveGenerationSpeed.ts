@@ -5,7 +5,7 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import { presentLiveWindow, type GenerationSpeedPresentation } from "./generationSpeed.ts";
@@ -301,15 +301,10 @@ function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScop
       candidate.runId === run.id &&
       ACTIVE_ATTEMPT_STATUSES.has(candidate.status),
   );
-  if (attempt === undefined || attempt.providerTurnId === null) return null;
+  if (attempt === undefined) return null;
 
-  const providerTurn = projection.providerTurns.find(
-    (candidate) =>
-      candidate.id === attempt.providerTurnId &&
-      candidate.runAttemptId === attempt.id &&
-      candidate.status === "running",
-  );
-  if (providerTurn === undefined) return null;
+  const providerTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
+  if (providerTurn?.status !== "running") return null;
 
   const providerThread = projection.providerThreads.find(
     (candidate) => candidate.id === providerTurn.providerThreadId,
