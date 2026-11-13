@@ -5,19 +5,20 @@ import type {
   OrchestrationV2ThreadProjection,
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { presentLiveWindow, type GenerationSpeedPresentation } from "./generationSpeed.ts";
+import {
+  deriveGenerationSpeed,
+  presentLiveWindow,
+  type GenerationSpeedPresentation,
+} from "./generationSpeed.ts";
 
 const LIVE_GENERATION_WINDOW_MS = 2_000;
 const LIVE_GENERATION_PUBLISH_INTERVAL_MS = 1_000;
 const LIVE_GENERATION_MIN_SPAN_MS = 750;
 const LIVE_GENERATION_MIN_SAMPLES = 3;
 const LIVE_GENERATION_MAX_SAMPLES = 256;
-// A streaming reply normally flushes more often than this. When no sample arrives for
-// this long, the observation is too old to describe current output.
-export const LIVE_GENERATION_QUIET_EXPIRY_MS = 1_500;
 
 const GENERATING_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "preparing",
@@ -35,8 +36,6 @@ export interface LiveGenerationSpeedTracker {
     events: ReadonlyArray<OrchestrationV2DomainEvent>,
     projection: OrchestrationV2ThreadProjection | null,
   ): LiveGenerationBatchResult;
-  /** Drops the current reading and makes the next streaming batch a fresh baseline. */
-  expire(): boolean;
   reset(): void;
 }
 
@@ -80,13 +79,13 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     currentText = null;
     totalTokens = 0;
     samples = [];
-    published = null;
     publishedAtMs = 0;
     lastEventAtMs = null;
   };
 
   const reset = () => {
     scopeKey = null;
+    published = null;
     clearWindow();
   };
 
@@ -165,7 +164,6 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
 
   const rebaseline = (eventTimeMs: number) => {
     samples = [{ atMs: eventTimeMs, tokens: totalTokens }];
-    published = null;
     publishedAtMs = 0;
     lastEventAtMs = eventTimeMs;
   };
@@ -176,7 +174,6 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     if (lastEventAtMs !== null && atMs - lastEventAtMs > LIVE_GENERATION_WINDOW_MS) {
       // A long gap is a fresh baseline; the old burst cannot describe current output.
       samples = [];
-      published = null;
       publishedAtMs = 0;
     }
     const last = samples.at(-1);
@@ -212,13 +209,22 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
     const before = published;
     let sawAssistantText = false;
     let terminal = false;
+    const completed = projection === null ? null : deriveGenerationSpeed(projection);
+    if (
+      completed !== null &&
+      (published?.kind !== "average" ||
+        published.outputTokens !== completed.outputTokens ||
+        published.durationMs !== completed.durationMs)
+    ) {
+      published = completed;
+    }
     const scope = liveScope(projection);
     if (scope === null) {
-      reset();
+      clearWindow();
       return {
         sawAssistantText,
         presentation: published,
-        presentationChanged: false,
+        presentationChanged: published !== before,
       } satisfies LiveGenerationBatchResult;
     }
     if (scope.key !== scopeKey) {
@@ -275,13 +281,6 @@ export function makeLiveGenerationSpeedTracker(): LiveGenerationSpeedTracker {
 
   return {
     observeBatch,
-    expire: () => {
-      const changed = published !== null;
-      published = null;
-      publishedAtMs = 0;
-      samples = [];
-      return changed;
-    },
     reset,
   };
 }
@@ -301,15 +300,10 @@ function liveScope(projection: OrchestrationV2ThreadProjection | null): LiveScop
       candidate.runId === run.id &&
       ACTIVE_ATTEMPT_STATUSES.has(candidate.status),
   );
-  if (attempt === undefined || attempt.providerTurnId === null) return null;
+  if (attempt === undefined) return null;
 
-  const providerTurn = projection.providerTurns.find(
-    (candidate) =>
-      candidate.id === attempt.providerTurnId &&
-      candidate.runAttemptId === attempt.id &&
-      candidate.status === "running",
-  );
-  if (providerTurn === undefined) return null;
+  const providerTurn = latestProviderTurnForAttempt(projection.providerTurns, attempt.id);
+  if (providerTurn?.status !== "running") return null;
 
   const providerThread = projection.providerThreads.find(
     (candidate) => candidate.id === providerTurn.providerThreadId,

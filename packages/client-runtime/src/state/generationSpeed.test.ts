@@ -46,7 +46,7 @@ describe("generation speed presentation", () => {
     );
 
     expect(presentation?.tokensPerSecond).toBe(10);
-    expect(presentation?.label).toBe("Avg ≈ 10 tok/s");
+    expect(presentation?.label).toBe("≈ 10 tok/s");
     expect(presentation?.kind).toBe("average");
     expect(presentation?.outputTokens).toBe(100);
     expect(presentation?.details).toContain("100 output tokens over 10.0 seconds");
@@ -81,7 +81,7 @@ describe("generation speed presentation", () => {
       providerTurns: [completedTurn({})],
     });
 
-    expect(presentation?.label).toBe("Avg ≈ 14 tok/s");
+    expect(presentation?.label).toBe("≈ 14 tok/s");
   });
 
   it("hides scopes that the server cannot attribute to one main-agent model", () => {
@@ -110,7 +110,7 @@ describe("generation speed presentation", () => {
       completedTurn({ outputTokens: 1, estimateDurationMs: 60_000 }),
     );
 
-    expect(presentation?.label).toBe("Avg ≈ <0.1 tok/s");
+    expect(presentation?.label).toBe("≈ <0.1 tok/s");
   });
 
   it("distinguishes the live visible-text estimate from the completed provider average", () => {
@@ -118,7 +118,7 @@ describe("generation speed presentation", () => {
 
     expect(presentation).toMatchObject({
       kind: "live",
-      label: "Live ≈ 42 tok/s",
+      label: "≈ 42 tok/s",
       outputTokens: 84,
       durationMs: 2_000,
     });

@@ -128,17 +128,9 @@ Leaving reasoning level or service tier unset uses the provider's own configurat
 
 ## Output throughput
 
-While a Codex reply streams, the composer can show a live estimate such as `Live ≈ 42 tok/s`.
-It counts only visible assistant text over a short rolling window using a multilingual
-character-based estimate, so tool output and hidden reasoning are not included. The live value
-appears once enough fresh output has arrived and clears when no new text arrives for a short
-time. Short replies may finish before it appears.
+输入框底部固定显示估算输出速度，例如 `≈ 42 tok/s`。正文输出时更新，进入思考或工具执行后保留最近一次读数；尚无有效样本时显示 `≈ … tok/s`。
 
-After the turn completes, the composer shows an average such as `Avg ≈ 13 tok/s`. It divides the
-turn's provider-reported output tokens, including reasoning and tool-call arguments once, by the
-full turn time minus confirmed tool, approval, and input waits. Network, prefill, and scheduling
-time remain included, so neither reading is pure decode speed. T3 Code hides the average when the
-turn is incomplete or the time and token scopes cannot be matched reliably.
+Codex 正文的实时读数采用短滚动窗口和多语言字符估算，不包含工具输出或隐藏思考。完成后的读数使用 provider 报告的输出 token 和扣除已确认等待的轮次耗时；其中可能包含思考、工具参数、网络、prefill 和调度开销。悬停可查看当前读数的统计口径。数据不足时不生成新读数，这些估算均不代表纯 decode 速度。
 
 ## Quote an assistant response
 
