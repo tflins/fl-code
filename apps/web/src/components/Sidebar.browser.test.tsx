@@ -157,11 +157,20 @@ it.each([
     });
     const now = "2026-11-13T00:00:00.000Z";
     const decision = makeThreadFixture({
-      ...source,
+      environmentId: source.environmentId,
+      projectId: source.projectId,
       id: ThreadId.make("decision-task"),
       title: "Retention policy",
-      lastVisitedAt: scenario.state === "woke" ? undefined : "2026-11-12T00:00:00.000Z",
+      ...(scenario.state === "woke" ? {} : { lastVisitedAt: "2026-11-12T00:00:00.000Z" }),
       snoozedUntil: scenario.state === "woke" ? now : null,
+      runtime: {
+        status: "completed",
+        activeRunId: null,
+        providerInstanceId: source.providerInstanceId,
+        providerName: null,
+        lastError: null,
+        updatedAt: now,
+      },
       latestRun: {
         runId: RunId.make("decision-reply"),
         status: "completed",
