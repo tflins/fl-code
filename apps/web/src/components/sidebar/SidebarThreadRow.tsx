@@ -1699,7 +1699,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   const runtimeStatus = thread.decision
     ? resolveRowRuntimeStatus({
         thread,
-        status: resolveSidebarThreadStatus(thread),
+        status: resolveSidebarRowStatus({ ...thread, lastVisitedAt }),
         isUnread: hasUnseenCompletion({ ...thread, lastVisitedAt }),
       })
     : null;
@@ -1918,7 +1918,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
 
 function resolveRowRuntimeStatus(input: {
   thread: SidebarThreadSummary;
-  status: ReturnType<typeof resolveSidebarThreadStatus>;
+  status: ReturnType<typeof resolveSidebarRowStatus>;
   isWoke?: boolean;
   isUnread: boolean;
 }) {

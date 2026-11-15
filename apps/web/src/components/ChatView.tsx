@@ -572,6 +572,16 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
+  const loadEarlierThreadHistoryStable = useStableCallback((throughEntryId?: string) => {
+    if (routeThreadDetailRef === null) return;
+    void loadEarlierThreadHistory({
+      environmentId: routeThreadDetailRef.environmentId,
+      input: {
+        threadId: routeThreadDetailRef.threadId,
+        ...(throughEntryId === undefined ? {} : { throughEntryId }),
+      },
+    });
+  });
   const threadHistoryControls = (() => {
     if (routeThreadDetailRef === null || !shouldShowLoadEarlierControl(serverThreadHistory)) {
       return undefined;
@@ -580,24 +590,8 @@ export default function ChatView(props: ChatViewProps) {
       hasMoreHistory: serverThreadHistory.hasMoreHistory,
       loading: serverThreadHistory.loading,
       error: serverThreadHistory.error,
-      onLoadThrough: (throughEntryId) => {
-        void loadEarlierThreadHistory({
-          environmentId: routeThreadDetailRef.environmentId,
-          input: {
-            threadId: routeThreadDetailRef.threadId,
-            throughEntryId,
-          },
-        });
-      },
-      onLoadEarlier: (throughEntryId) => {
-        void loadEarlierThreadHistory({
-          environmentId: routeThreadDetailRef.environmentId,
-          input: {
-            threadId: routeThreadDetailRef.threadId,
-            ...(throughEntryId === undefined ? {} : { throughEntryId }),
-          },
-        });
-      },
+      onLoadThrough: loadEarlierThreadHistoryStable,
+      onLoadEarlier: loadEarlierThreadHistoryStable,
     };
   })() as MessagesTimelineHistoryControls | undefined;
   const committedServerMessageIds = deriveCommittedServerUserMessageIds(serverVisibleTurnItems);
@@ -1074,9 +1068,14 @@ export default function ChatView(props: ChatViewProps) {
     setTimelineAnchor({ threadKey: activeThreadKey, messageId: null });
   }
   const timelineAnchorMessageId = timelineAnchor.messageId;
-  const jumpMessageId = useSyncExternalStore(subscribeThreadMessageJump, () =>
-    activeThreadKey === null ? null : pendingThreadMessageJump(activeThreadKey),
+  const jumpMessageId = useSyncExternalStore(
+    subscribeThreadMessageJump,
+    threadMessageJumpReader(activeThreadKey),
   );
+  const onJumpedToMessageStable = useStableCallback(() => {
+    if (activeThreadKey !== null) finishThreadMessageJump(activeThreadKey);
+  });
+  const threadProjectionReady = serverProjection !== null;
   const jumpMessageLoaded =
     jumpMessageId !== null &&
     serverVisibleTurnItems.some(
@@ -1095,7 +1094,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (jumpMessageId === null || jumpMessageLoaded) return;
     if (!jumpHistoryAvailable) {
-      if (!threadDetailLoading && serverProjection !== null && activeThreadKey !== null) {
+      if (!threadDetailLoading && threadProjectionReady && activeThreadKey !== null) {
         finishThreadMessageJump(activeThreadKey);
       }
       return;
@@ -1115,7 +1114,7 @@ export default function ChatView(props: ChatViewProps) {
     jumpHistoryLoading,
     jumpMessageId,
     jumpMessageLoaded,
-    serverProjection,
+    threadProjectionReady,
     threadDetailLoading,
   ]);
   // LegendList never recomputes anchored end-space geometry, leaving phantom scroll range after content fits.
@@ -3625,9 +3624,7 @@ export default function ChatView(props: ChatViewProps) {
                   skills={timelineSkills}
                   anchorMessageId={timelineAnchorMessageId}
                   jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
-                  onJumpedToMessage={(_messageId) => {
-                    if (activeThreadKey !== null) finishThreadMessageJump(activeThreadKey);
-                  }}
+                  onJumpedToMessage={onJumpedToMessageStable}
                   onAnchorReady={onTimelineAnchorReadyStable}
                   onAnchorSizeChanged={onTimelineAnchorSizeChangedStable}
                   contentInsetEndAdjustment={composerTimelineInset}
@@ -4191,6 +4188,11 @@ export default function ChatView(props: ChatViewProps) {
 function preventMiddleClickPasteOutsideEditable(event: ReactMouseEvent) {
   if (event.button !== 1 || isEditableFocused(event.target)) return;
   event.preventDefault();
+}
+
+// A snapshot reader created in ChatView would retain its render's thread projection.
+function threadMessageJumpReader(threadKey: string | null) {
+  return () => (threadKey === null ? null : pendingThreadMessageJump(threadKey));
 }
 
 function PreviewSessionSync(props: { readonly threadRef: ScopedThreadRef }) {

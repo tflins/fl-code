@@ -1,6 +1,4 @@
 import type {
-  NodeId,
-  OrchestrationV2ConversationMessage,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderTurn,
@@ -11,6 +9,7 @@ import type {
   OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import { subagentHoldsCompletion } from "@t3tools/provider-core/server/subagentProjection";
+export { delegatedTaskRuns } from "@t3tools/provider-core/server/subagentProjection";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 
@@ -190,40 +189,6 @@ export function cancelledBeforeStart(
   run: Pick<OrchestrationV2Run, "status" | "startedAt" | "restartContinuationOfRunId">,
 ): boolean {
   return run.status === "cancelled" && neverStarted(run);
-}
-
-/** A follow-up task's runs: those tagged with it, and the untagged wakes for subagents they started. */
-export function delegatedTaskRuns(
-  projection: {
-    readonly runs: ReadonlyArray<OrchestrationV2Run>;
-    readonly messages: ReadonlyArray<
-      Pick<OrchestrationV2ConversationMessage, "runId" | "delegatedCompletion">
-    >;
-  },
-  taskId: NodeId,
-): ReadonlyArray<OrchestrationV2Run> {
-  const owned = new Set(
-    projection.runs.filter((run) => run.delegatedTaskId === taskId).map((run) => run.id),
-  );
-  const untagged = new Set(
-    projection.runs.filter((run) => run.delegatedTaskId === undefined).map((run) => run.id),
-  );
-  for (let grew = owned.size > 0; grew;) {
-    grew = false;
-    for (const { runId, delegatedCompletion } of projection.messages) {
-      if (
-        runId === null ||
-        !untagged.has(runId) ||
-        owned.has(runId) ||
-        delegatedCompletion === undefined ||
-        !owned.has(delegatedCompletion.parentRunId)
-      )
-        continue;
-      owned.add(runId);
-      grew = true;
-    }
-  }
-  return projection.runs.filter((run) => owned.has(run.id));
 }
 
 /**

@@ -1,7 +1,6 @@
 import {
   isOrchestrationV2WorkActive,
   type OrchestrationV2Subagent,
-  type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";

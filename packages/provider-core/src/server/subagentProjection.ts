@@ -433,14 +433,52 @@ export function subagentResultForRun(
   };
 }
 
+/** A follow-up task's runs: those tagged with it, and the untagged wakes for subagents they started. */
+export function delegatedTaskRuns<R extends Pick<OrchestrationV2Run, "id" | "delegatedTaskId">>(
+  projection: {
+    readonly runs: ReadonlyArray<R>;
+    readonly messages: ReadonlyArray<
+      Pick<OrchestrationV2ConversationMessage, "runId" | "delegatedCompletion">
+    >;
+  },
+  taskId: NodeId,
+): ReadonlyArray<R> {
+  const owned = completionWakeRunIds(
+    projection,
+    new Set(projection.runs.filter((run) => run.delegatedTaskId === taskId).map((run) => run.id)),
+  );
+  return projection.runs.filter((run) => owned.has(run.id));
+}
+
 export function scopeDelegatedTask<
-  T extends Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">,
+  T extends {
+    readonly thread: Pick<OrchestrationV2ThreadProjection["thread"], "forkedFrom">;
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "delegatedTaskId">>;
+    readonly subagents: ReadonlyArray<Pick<OrchestrationV2Subagent, "runId">>;
+    readonly messages?: ReadonlyArray<
+      Pick<OrchestrationV2ConversationMessage, "runId" | "delegatedCompletion">
+    >;
+  },
 >(projection: T, taskId: NodeId): T {
   if (projection.runs.every((run) => run.delegatedTaskId === undefined)) return projection;
   const original =
     projection.thread.forkedFrom?.type === "node" && projection.thread.forkedFrom.nodeId === taskId;
+  const records = { runs: projection.runs, messages: projection.messages ?? [] };
+  const ownedRunIds = new Set(delegatedTaskRuns(records, taskId).map((run) => run.id));
+  const foreignRunIds = original
+    ? completionWakeRunIds(
+        records,
+        new Set(
+          projection.runs
+            .filter((run) => run.delegatedTaskId !== undefined && run.delegatedTaskId !== taskId)
+            .map((run) => run.id),
+        ),
+      )
+    : undefined;
   const runs = projection.runs.filter(
-    (run) => run.delegatedTaskId === taskId || (original && run.delegatedTaskId === undefined),
+    (run) =>
+      ownedRunIds.has(run.id) ||
+      (original && run.delegatedTaskId === undefined && !foreignRunIds?.has(run.id)),
   );
   const runIds = new Set(runs.map((run) => run.id));
   return {
@@ -448,6 +486,36 @@ export function scopeDelegatedTask<
     runs,
     subagents: projection.subagents.filter((task) => task.runId !== null && runIds.has(task.runId)),
   };
+}
+
+function completionWakeRunIds(
+  projection: {
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "delegatedTaskId">>;
+    readonly messages: ReadonlyArray<
+      Pick<OrchestrationV2ConversationMessage, "runId" | "delegatedCompletion">
+    >;
+  },
+  owned: Set<OrchestrationV2Run["id"]>,
+): Set<OrchestrationV2Run["id"]> {
+  const untagged = new Set(
+    projection.runs.filter((run) => run.delegatedTaskId === undefined).map((run) => run.id),
+  );
+  for (let grew = owned.size > 0; grew;) {
+    grew = false;
+    for (const { runId, delegatedCompletion } of projection.messages) {
+      if (
+        runId === null ||
+        !untagged.has(runId) ||
+        owned.has(runId) ||
+        delegatedCompletion === undefined ||
+        !owned.has(delegatedCompletion.parentRunId)
+      )
+        continue;
+      owned.add(runId);
+      grew = true;
+    }
+  }
+  return owned;
 }
 
 export function subagentHoldsCompletion(

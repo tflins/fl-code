@@ -261,7 +261,9 @@ it.each([
     });
     await expect.element(sourceLink).toBeVisible();
     if (scenario.layout === "search") {
-      await userEvent.click(screen.getByRole("option"));
+      const option = screen.getByRole("option");
+      await userEvent.click(option);
+      option.element().focus();
       await userEvent.keyboard("{Enter}");
       expect(onSelect).toHaveBeenCalledTimes(2);
       onSelect.mockClear();

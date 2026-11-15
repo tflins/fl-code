@@ -58,7 +58,6 @@ import {
   installFakeEnvironment,
   isThreadSubscribed,
   runningRun,
-  dispatchedCommands,
   rejectPendingCommand,
   threadWithHistory,
   threadWithQuestion,
@@ -858,6 +857,8 @@ it("a mounted thread view lets go of the thread structures it has replaced", asy
     shown.push(new WeakRef(appAtomRegistry.get(structureAtom)!.projection));
     await open(other.id, "Answer 2 for other.");
   }
+  // Recorded timeline props would keep every replaced projection alive in this test.
+  vi.mocked(ThreadTimeline).mockClear();
   await cdp().send("HeapProfiler.collectGarbage");
 
   // The thread keeps its latest structure, and the timeline may remember the one before it.
@@ -871,8 +872,8 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   using _environment = installFakeEnvironment([thread], {
     keybindings: mergeWithDefaultKeybindings(
       compileResolvedKeybindingsConfig([
-        { key: "ctrl+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" },
-        { key: "ctrl+t", command: "rightPanel.toggle", when: "!rightPanelOpen" },
+        { key: "mod+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" },
+        { key: "mod+t", command: "rightPanel.toggle", when: "!rightPanelOpen" },
       ]),
     ),
   });
@@ -894,7 +895,7 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   await toggle.click();
   await page.getByRole("button", { name: /^Files/ }).click();
   await composer.click();
-  await userEvent.keyboard("{Control>}t{/Control}");
+  await userEvent.keyboard("{ControlOrMeta>}t{/ControlOrMeta}");
   await expect.element(page.getByRole("menuitem", { name: /Files/ })).toBeVisible();
   await expect.element(toggle).toHaveAttribute("aria-pressed", "true");
 });

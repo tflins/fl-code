@@ -14862,20 +14862,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      // Each follow-up waits for its own nested work, independently of later queued follow-ups.
-      if (
-        taskRuns.length > 0 &&
-        !taskRuns.every(neverStarted) &&
-        delegatedTaskProgress({
-          ...childControls,
-          runs: taskRuns,
-          subagents: childControls.subagents.filter((task) =>
-            taskRuns.some((run) => run.id === task.runId),
-          ),
-        }).state !== "result_available"
-      )
-        return;
-
       const childResult = yield* projectionStore.getThreadRecords(
         childThreadId,
         ["messages", "turnItems"],
@@ -16575,7 +16561,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       if (taskId !== undefined) {
         const scoped = scopeDelegatedTask(child, taskId);
-        const runs = delegatedTaskRuns(child, taskId);
+        const runs = scoped.runs;
         const run = delegatedTaskResultRun(runs);
         if (run === undefined || delegatedTaskTerminalStatus(run.status) === null) return true;
         if (runs.every(neverStarted)) return false;
