@@ -108,13 +108,13 @@ function view(
         options={{}}
         renderHeaderFilenameSuffix={() => null}
         renderHeaderPrefix={() => null}
-        onRevealSearchMatch={() => {}}
         {...(ask === undefined
           ? {}
           : {
               onAskAboutSelection: ask.onAskAboutSelection,
               askParentPanel: ask.askParentPanel,
             })}
+        onFileCollapsedChange={() => {}}
       />
     </StrictMode>
   );
