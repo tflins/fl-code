@@ -60,6 +60,7 @@ describe("Codex orchestration context", () => {
     NodeAssert.ok(
       orchestration.includes("New task, explicitly independent review or no matching collaborator"),
     );
+    NodeAssert.ok(orchestration.includes("`threadId` set to its returned `childThreadId`"));
     NodeAssert.ok(orchestration.includes('`mode:"queue"`'));
     NodeAssert.ok(!orchestration.includes("inheritedOptions"));
     NodeAssert.ok(!orchestration.includes("Prefer native"));
