@@ -56,9 +56,9 @@ describe("Codex orchestration context", () => {
     NodeAssert.ok(
       orchestration.includes("Background agent: `delegate_task`, never a background `Agent`."),
     );
-    NodeAssert.ok(orchestration.includes("Each review/re-check defaults to a new `delegate_task`"));
+    NodeAssert.ok(orchestration.includes("reuse its collaborator by default"));
     NodeAssert.ok(
-      orchestration.includes("Only when asked to continue or retain the same collaborator"),
+      orchestration.includes("New task, explicitly independent review or no matching collaborator"),
     );
     NodeAssert.ok(orchestration.includes('`mode:"queue"`'));
     NodeAssert.ok(!orchestration.includes("inheritedOptions"));

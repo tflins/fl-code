@@ -264,13 +264,13 @@ omits it for a provider that offers all of them. When the target lists
 `runtimeModes`, an explicit `runtimeMode` outside that list is refused, and an
 inherited mode steps down to the broadest mode the target offers.
 
-Each independent delegated review round uses a new `delegate_task` call with the
-original brief, prior findings, responses, and unresolved objections. Track each
-round by its own `taskId` and use a distinct `clientRequestId` per round, stable
-across retries of that round.
-明确要求保留同一协作者继续讨论、返修或复验时，通过 `t3_thread_send` 向原
-`childThreadId` 发送消息，使用 `mode: "queue"`，不设置 `freshContext`。每个排队轮次
-都有独立的 `taskId`，包括首轮尚未结束时的排队；按返回的任务 ID 追踪结果，已发布的旧结果不变。
+同一任务的继续讨论、返修、复检及中断恢复，默认保留原协作者，通过 `t3_thread_send`
+向原 `childThreadId` 发送消息，使用 `mode: "queue"`，不设置 `freshContext`。
+新任务、明确要求独立评审，或没有符合所需 provider、模型和配置的协作者时，新建
+`delegate_task`，携带原始要求、相关发现、回应及未解决异议。只有明确要求清空上下文时
+才设置 `freshContext: true`；待回答的问题或审批不能通过新建协作者绕开。
+每个排队轮次都有独立的 `taskId`，包括首轮尚未结束时的排队；按返回的任务 ID
+追踪结果，已发布的旧结果不变。`taskId` 变化不代表新建会话。
 `steer` 是对当前轮次追加信息，`restart` 会中断并重启当前轮次，不用于排队新一轮。
 同一次发送重试复用 `clientRequestId`，新的轮次使用新的值。
 
