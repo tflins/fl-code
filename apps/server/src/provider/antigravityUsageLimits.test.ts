@@ -11,6 +11,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 
 import { makeAntigravityUsageProbe } from "./antigravityUsageLimits.ts";
+import type { AntigravityOAuthClient } from "./antigravityOAuthClient.ts";
 
 const summary = {
   groups: [
@@ -66,6 +67,10 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
     userInfoAt?: number;
     missingToken?: boolean;
     authMethod?: "oauth-personal" | "oauth-business" | "gemini-api-key";
+    readKeyringToken?: Effect.Effect<string | undefined>;
+    oauthClient?: AntigravityOAuthClient;
+    expectedAccessToken?: string;
+    expectedProjectBody?: Record<string, unknown>;
   } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -102,7 +107,9 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
           ),
         );
       }
-      expect(request.headers.authorization).toBe("Bearer access-token");
+      expect(request.headers.authorization).toBe(
+        `Bearer ${options.expectedAccessToken ?? "access-token"}`,
+      );
       if (request.url.endsWith("/userinfo")) {
         return HttpClientResponse.fromWeb(
           request,
@@ -111,7 +118,7 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
             : Response.json({}, { status: 403 }),
         );
       }
-      expect(JSON.parse(body)).toEqual({ project: "project-id" });
+      expect(JSON.parse(body)).toEqual(options.expectedProjectBody ?? { project: "project-id" });
       expect(request.headers["user-agent"]).toMatch(/^antigravity\/hub\/2\.24\.0 /);
       return HttpClientResponse.fromWeb(
         request,
@@ -132,6 +139,8 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
   const usage = yield* makeAntigravityUsageProbe({
     profileDirectory,
     authMethod: options.authMethod ?? "oauth-personal",
+    readKeyringToken: options.readKeyringToken ?? Effect.undefined,
+    ...(options.oauthClient === undefined ? {} : { oauthClient: options.oauthClient }),
   }).pipe(Effect.provideService(HttpClient.HttpClient, http));
   return { ...usage, requests, writeToken, tokenPath };
 });
@@ -656,11 +665,107 @@ describe("Antigravity subscription limits", () => {
 
   it.effect("does not make network requests for API keys or missing sign-ins", () =>
     Effect.gen(function* () {
-      for (const options of [{ authMethod: "gemini-api-key" as const }, { missingToken: true }]) {
+      for (const options of [
+        { authMethod: "gemini-api-key" as const },
+        { missingToken: true },
+        { missingToken: true, readKeyringToken: Effect.succeed("go-keyring-base64:not-json") },
+      ]) {
         const { probe, requests } = yield* fixture(options);
         expect((yield* probe).unavailable?.reason).toBe("unsupported");
         expect(requests).toEqual([]);
       }
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect(
+    "reads unexpired Antigravity CLI tokens from go-keyring payloads without refreshing",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(
+          DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-16T14:00:00Z")),
+        );
+        const payload = `go-keyring-base64:${Buffer.from(
+          JSON.stringify({
+            token: {
+              access_token: "keyring-access-token",
+              refresh_token: "keyring-refresh-a",
+              expiry: "2026-11-16T14:30:00Z",
+            },
+            auth_method: "consumer",
+          }),
+          "utf8",
+        ).toString("base64")}`;
+        const { probe, requests } = yield* fixture({
+          missingToken: true,
+          readKeyringToken: Effect.succeed(payload),
+          oauthClient: { clientId: "keyring-client-id", clientSecret: "keyring-client-secret" },
+          expectedAccessToken: "keyring-access-token",
+          expectedProjectBody: {},
+          userId: "google-user-keyring",
+        });
+        const limits = yield* probe;
+        expect(limits.unavailable).toBeUndefined();
+        expect(limits.windows).toHaveLength(4);
+        expect(requests.filter((request) => request.url.endsWith("/token"))).toEqual([]);
+      }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("refreshes expired Antigravity CLI keyring tokens and reacts to sign-out", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-16T15:00:00Z")));
+      const encodeKeyring = (refreshToken: string) =>
+        `go-keyring-base64:${Buffer.from(
+          JSON.stringify({
+            token: {
+              access_token: "expired-access-token",
+              refresh_token: refreshToken,
+              expiry: "2026-11-16T14:30:00Z",
+            },
+          }),
+          "utf8",
+        ).toString("base64")}`;
+      let stored: string | undefined = encodeKeyring("keyring-refresh-a");
+      const { probe, requests } = yield* fixture({
+        missingToken: true,
+        readKeyringToken: Effect.sync(() => stored),
+        oauthClient: { clientId: "keyring-client-id", clientSecret: "keyring-client-secret" },
+        expectedProjectBody: {},
+      });
+      const first = yield* probe;
+      expect(first.windows).toHaveLength(4);
+      expect(requests.filter((request) => request.url.endsWith("/token"))).toHaveLength(1);
+      const tokenBody = new URLSearchParams(
+        requests.find((request) => request.url.endsWith("/token"))?.body,
+      );
+      expect(tokenBody.get("client_id")).toBe("keyring-client-id");
+      expect(tokenBody.get("client_secret")).toBe("keyring-client-secret");
+      stored = encodeKeyring("keyring-refresh-b");
+      const second = yield* probe;
+      expect(second.credentialFingerprint).not.toBe(first.credentialFingerprint);
+      expect(requests.filter((request) => request.url.endsWith("/token"))).toHaveLength(2);
+      stored = undefined;
+      expect((yield* probe).unavailable?.reason).toBe("unsupported");
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("does not use keyring tokens without an OAuth client", () =>
+    Effect.gen(function* () {
+      const payload = `go-keyring-base64:${Buffer.from(
+        JSON.stringify({
+          token: {
+            access_token: "keyring-access-token",
+            refresh_token: "keyring-refresh-a",
+            expiry: "2026-11-16T14:30:00Z",
+          },
+        }),
+        "utf8",
+      ).toString("base64")}`;
+      const { probe, requests } = yield* fixture({
+        missingToken: true,
+        readKeyringToken: Effect.succeed(payload),
+      });
+      expect((yield* probe).unavailable?.reason).toBe("unsupported");
+      expect(requests).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });
