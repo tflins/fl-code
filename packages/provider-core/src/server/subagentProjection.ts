@@ -20,6 +20,7 @@ import type {
   TurnItemId,
 } from "@t3tools/contracts";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { derive } from "./IdAllocator.ts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -189,6 +190,63 @@ export function withExecutedModelNote(
   return executedModel == null || executedModel === requestedModel
     ? result
     : `Requested model ${requestedModel}; the provider reported running ${executedModel}.\n\n${result}`;
+}
+
+/** Run signal of the notice that carries a provider's stop reason on a completed run. */
+export const PROVIDER_STOP_REASON_SIGNAL = "provider-stop-reason";
+
+function stopNotice(
+  projection: Pick<OrchestrationV2ThreadProjection, "turnItems">,
+  run: OrchestrationV2Run,
+): string | undefined {
+  const id = derive.runSignalTurnItem({ runId: run.id, signal: PROVIDER_STOP_REASON_SIGNAL });
+  const notice = projection.turnItems.find((item) => item.id === id);
+  return notice?.type === "system_notice" ? notice.message : undefined;
+}
+
+type MonitorNotice = Pick<OrchestrationV2ConversationMessage, "runId" | "notification">;
+
+/** Runs that only acknowledge a monitor update are never a task's work. */
+function monitorUpdateRunIds(messages: ReadonlyArray<MonitorNotice>) {
+  return new Set(
+    messages
+      .filter(
+        (message) =>
+          message.notification?.source.kind === "monitor" &&
+          message.notification.outcome === "updated",
+      )
+      .map((message) => message.runId),
+  );
+}
+
+/**
+ * The same task's completed runs before `run`, latest first: where its report is when `run`
+ * completed without saying anything. Ends at another task's run or at any other outcome.
+ */
+export function delegatedTaskReportRuns(
+  projection: {
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
+    readonly messages: ReadonlyArray<MonitorNotice>;
+  },
+  run: OrchestrationV2Run,
+): ReadonlyArray<OrchestrationV2Run> {
+  if (run.status !== "completed") return [];
+  const monitorRuns = monitorUpdateRunIds(projection.messages);
+  const earlier = projection.runs
+    .filter(
+      (candidate) =>
+        candidate.id !== run.id &&
+        candidate.startedAt !== null &&
+        candidate.status !== "rolled_back" &&
+        !monitorRuns.has(candidate.id) &&
+        runRanAfter(run, candidate),
+    )
+    .toSorted((a, b) => (runRanAfter(a, b) ? -1 : 1));
+  const end = earlier.findIndex(
+    (candidate) =>
+      candidate.status !== "completed" || candidate.delegatedTaskId !== run.delegatedTaskId,
+  );
+  return end === -1 ? earlier : earlier.slice(0, end);
 }
 
 export type DelegatedTaskRunAssociation =
@@ -406,18 +464,40 @@ export function subagentOriginalResultForRun(
 }
 
 export function subagentResultForRun(
+  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns"> & {
+    readonly runs?: ReadonlyArray<OrchestrationV2Run>;
+  },
+  run: OrchestrationV2Run,
+) {
+  const result = resultOfRun(projection, run);
+  if (
+    run.status !== "completed" ||
+    result.messageId !== null ||
+    result.turnItemId !== null ||
+    stopNotice(projection, run) !== undefined
+  )
+    return result;
+  for (const earlier of delegatedTaskReportRuns(
+    { runs: projection.runs ?? [], messages: projection.messages },
+    run,
+  )) {
+    const report = resultOfRun(projection, earlier);
+    if (report.messageId !== null || report.turnItemId !== null) return report;
+  }
+  return result;
+}
+
+function resultOfRun(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems" | "providerTurns">,
   run: OrchestrationV2Run,
-): {
-  readonly text: string;
-  readonly messageId: OrchestrationV2ConversationMessage["id"] | null;
-  readonly turnItemId: OrchestrationV2TurnItem["id"] | null;
-} {
+) {
   const original = subagentOriginalResultForRun(projection, run);
   const text =
     original?.text ??
     (run.status === "completed"
-      ? "Child task completed without an assistant result."
+      ? ["Child task completed without an assistant result.", stopNotice(projection, run)]
+          .filter((part) => part !== undefined)
+          .join("\n\n")
       : `Child task ended with status ${run.status}.`);
   const executedModel = latestProviderTurnForAttempt(
     projection.providerTurns,
@@ -545,11 +625,7 @@ export function delegatedTaskProgress(projection: {
 }) {
   const terminal = (status: string) =>
     ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
-  const monitorRuns = new Set(
-    projection.messages
-      .filter((message) => message.notification?.source.kind === "monitor")
-      .map((message) => message.runId),
-  );
+  const monitorRuns = monitorUpdateRunIds(projection.messages);
   const workRuns = projection.runs.filter(
     (run) => !monitorRuns.has(run.id) && run.status !== "rolled_back",
   );
