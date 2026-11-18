@@ -106,10 +106,12 @@ describe("OrchestratorMcpService decisions", () => {
     let rejectNext: "thread.create" | "message.dispatch" | undefined;
     const rejected = new Set<string>();
 
+    const runsFor = (threadId: ThreadId) => (threadId === sourceThreadId ? [sourceRun] : []);
     const projectionFor = (shell: OrchestrationV2ThreadShell) =>
       ({
         thread: { ...shell, lastVisitedAt: null },
-        runs: shell.id === sourceThreadId ? [sourceRun] : [],
+        runs: runsFor(shell.id),
+        providerTurns: [],
         messages:
           shell.id === sourceThreadId
             ? [
@@ -158,6 +160,7 @@ describe("OrchestratorMcpService decisions", () => {
           }
           return decisionShell?.id === threadId ? decisionShell : null;
         }),
+      getRunCount: (threadId) => Effect.succeed(runsFor(threadId).length),
       getThreadRecords: (threadId) =>
         Effect.sync(() => {
           const shell =

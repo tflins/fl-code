@@ -231,9 +231,8 @@ describe("diff selection questions", () => {
       }),
       "Why this branch?",
     );
-    await vi.waitFor(() => {
-      expect(container.querySelector("[data-diff-ask-panel][data-side-chat-pane]")).not.toBeNull();
-    });
+    await expect.element(screen.getByText("Ask about this diff", { exact: true })).toBeVisible();
+    expect(container.querySelector("[data-diff-ask-panel][data-side-chat-pane]")).not.toBeNull();
     expect(screen.container).toBe(container);
   });
 });
