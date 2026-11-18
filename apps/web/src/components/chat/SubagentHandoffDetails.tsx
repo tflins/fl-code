@@ -1,3 +1,4 @@
+import { useGT, useMessages } from "gt-react";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   INITIAL_SUBAGENT_HANDOFF_OFFSETS,
@@ -35,6 +36,8 @@ export function SubagentHandoffDetails(props: {
   readonly canOpenTarget: (target: SubagentHandoffNavigationTarget) => boolean;
   readonly onOpenTarget: (target: SubagentHandoffNavigationTarget) => void;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const [offsets, setOffsets] = useState<SubagentHandoffOffsets>(INITIAL_SUBAGENT_HANDOFF_OFFSETS);
   const [mergeKeys, setMergeKeys] = useState<ReadonlyArray<SubagentHandoffBodyKey>>(ALL_SECTIONS);
   const [baseView, setBaseView] = useState<SubagentHandoffView | null>(null);
@@ -89,7 +92,7 @@ export function SubagentHandoffDetails(props: {
       <div className="mt-1 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
         <p className="text-destructive-foreground">{query.error}</p>
         <Button className="mt-2" size="xs" variant="outline" onClick={query.refresh}>
-          Retry
+          {gt("Retry")}
         </Button>
       </div>
     );
@@ -98,14 +101,14 @@ export function SubagentHandoffDetails(props: {
     return (
       <p className="mt-1 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
         {query.isPending || query.data !== null
-          ? "Loading handoff…"
-          : "Handoff record unavailable."}
+          ? gt("Loading handoff…")
+          : gt("Handoff record unavailable.")}
       </p>
     );
   }
 
   const handoff = view.handoff;
-  const delivery = formatSubagentDelivery(handoff.completionDelivery);
+  const delivery = formatSubagentDelivery(handoff.completionDelivery, m);
   const target = resolveSubagentHandoffNavigationTarget(handoff, props.parentEnvironmentId);
   const canOpen =
     target !== null && subagentHandoffTargetIsAvailable(handoff) && props.canOpenTarget(target);
@@ -122,47 +125,51 @@ export function SubagentHandoffDetails(props: {
 
   return (
     <section
-      aria-label="Subagent handoff"
+      aria-label={gt("Subagent handoff")}
       className="mt-1 flex min-w-0 flex-col gap-3 rounded-lg border border-border/70 bg-muted/20 p-3 text-xs"
     >
       <dl className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1.5">
-        <Metadata label="Execution">
-          {formatSubagentExecutionStatus(handoff.executionStatus)}
+        <Metadata label={gt("Execution")}>
+          {formatSubagentExecutionStatus(handoff.executionStatus, m)}
         </Metadata>
-        <Metadata label="Delivery">
+        <Metadata label={gt("Delivery")}>
           {delivery.label}
           <span className="block text-muted-foreground">{delivery.detail}</span>
         </Metadata>
-        <Metadata label="Requested model">
-          {formatSubagentRequestedModel(handoff.requestedModel)}
+        <Metadata label={gt("Requested model")}>
+          {formatSubagentRequestedModel(handoff.requestedModel, m)}
         </Metadata>
-        <Metadata label="Executed model">
-          {formatSubagentExecutedModel(handoff.executedModel)}
+        <Metadata label={gt("Executed model")}>
+          {formatSubagentExecutedModel(handoff.executedModel, m)}
         </Metadata>
-        <Metadata label="Round">
-          {formatSubagentRoundAssociation(handoff.roundAssociation)}
+        <Metadata label={gt("Round")}>
+          {formatSubagentRoundAssociation(handoff.roundAssociation, m)}
         </Metadata>
-        <Metadata label="Child">
-          {formatSubagentChildThreadState(handoff.childThreadState)}
+        <Metadata label={gt("Child")}>
+          {formatSubagentChildThreadState(handoff.childThreadState, m)}
         </Metadata>
       </dl>
 
       <div className="flex flex-wrap items-center gap-2">
         <Button size="xs" variant="outline" disabled={!canOpen} onClick={openTarget}>
-          Open thread
+          {gt("Open thread")}
         </Button>
         {target === null ? (
-          <span className="text-muted-foreground">No child thread is recorded.</span>
+          <span className="text-muted-foreground">{gt("No child thread is recorded.")}</span>
         ) : !subagentHandoffTargetIsAvailable(handoff) ? (
           <span className="text-muted-foreground">
-            {formatSubagentChildThreadState(handoff.childThreadState)}.
+            {formatSubagentChildThreadState(handoff.childThreadState, m)}.
           </span>
         ) : !canOpen ? (
-          <span className="text-muted-foreground">The child environment is unavailable.</span>
+          <span className="text-muted-foreground">
+            {gt("The child environment is unavailable.")}
+          </span>
         ) : target.messageId === null ? (
-          <span className="text-muted-foreground">Exact round location is unavailable.</span>
+          <span className="text-muted-foreground">
+            {gt("Exact round location is unavailable.")}
+          </span>
         ) : (
-          <span className="text-muted-foreground">Opens at the recorded round.</span>
+          <span className="text-muted-foreground">{gt("Opens at the recorded round.")}</span>
         )}
         <Button
           className="ms-auto"
@@ -171,19 +178,19 @@ export function SubagentHandoffDetails(props: {
           disabled={query.isPending}
           onClick={refresh}
         >
-          Refresh
+          {gt("Refresh")}
         </Button>
       </div>
 
       <HandoffText
-        label="Task prompt"
+        label={gt("Task prompt")}
         value={view.prompt}
         unavailable="The original task prompt is unavailable."
         loading={query.isPending}
         onLoadMore={(offset) => loadMore("prompt", offset)}
       />
       <HandoffText
-        label={formatSubagentResultSource(handoff.result.source)}
+        label={formatSubagentResultSource(handoff.result.source, m)}
         value={view.result}
         unavailable={
           handoff.result.source === null
@@ -194,7 +201,7 @@ export function SubagentHandoffDetails(props: {
         onLoadMore={(offset) => loadMore("result", offset)}
       />
       <HandoffText
-        label="Parent task result record"
+        label={gt("Parent task result record")}
         value={view.delivery}
         unavailable="No result text was saved on the parent task."
         loading={query.isPending}
@@ -220,6 +227,7 @@ function HandoffText(props: {
   readonly loading: boolean;
   readonly onLoadMore: (offset: number) => void;
 }) {
+  const gt = useGT();
   return (
     <section aria-label={props.label} className="flex min-w-0 flex-col gap-1.5">
       <h4 className="font-medium text-foreground">{props.label}</h4>
@@ -238,7 +246,7 @@ function HandoffText(props: {
           disabled={props.loading}
           onClick={() => props.onLoadMore(props.value.nextOffset!)}
         >
-          Load more
+          {gt("Load more")}
         </Button>
       )}
     </section>

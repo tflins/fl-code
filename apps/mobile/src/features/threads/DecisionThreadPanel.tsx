@@ -1,3 +1,4 @@
+import { useGT, useMessages } from "gt-react-native";
 import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
 import {
   prepareDecisionSubmission,
@@ -24,6 +25,8 @@ export function DecisionThreadPanel(props: {
   readonly threadRef: ScopedThreadRef;
   readonly decision: OrchestrationV2Decision;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const { threadRef, decision } = props;
   const sourceRef = { environmentId: threadRef.environmentId, threadId: decision.sourceThreadId };
   const source = useAtomValue(environmentThreadShells.threadShellAtom(sourceRef));
@@ -115,7 +118,7 @@ export function DecisionThreadPanel(props: {
       setError(
         cause instanceof Error
           ? cause.message
-          : "Could not update the decision. Your answer is kept here.",
+          : gt("Could not update the decision. Your answer is kept here."),
       );
       if (
         typeof cause === "object" &&
@@ -134,7 +137,7 @@ export function DecisionThreadPanel(props: {
     } else {
       saveDraft(undefined);
       if (action === "cancel" && "sourceNotified" in result.value && !result.value.sourceNotified) {
-        setError("Decision cancelled. The source task could not be notified.");
+        setError(gt("Decision cancelled. The source task could not be notified."));
       }
     }
     inFlight.current = false;
@@ -143,7 +146,7 @@ export function DecisionThreadPanel(props: {
 
   return (
     <View
-      accessibilityLabel="Decision"
+      accessibilityLabel={gt("Decision")}
       className="mx-3 mb-2 gap-2 rounded-xl border border-input-border bg-screen p-3"
     >
       <View className="flex-row items-center gap-2">
@@ -152,14 +155,14 @@ export function DecisionThreadPanel(props: {
           size={14}
           tintColorClassName="accent-warning-foreground"
         />
-        <Text className="text-sm font-t3-medium text-warning-foreground">Decision</Text>
-        <Text className="text-xs font-t3-medium">{decisionStatusLabels[decision.status]}</Text>
+        <Text className="text-sm font-t3-medium text-warning-foreground">{gt("Decision")}</Text>
+        <Text className="text-xs font-t3-medium">{m(decisionStatusLabels[decision.status])}</Text>
         <Text className="flex-1 text-xs text-foreground-muted" numberOfLines={1}>
           {!showDetails ? decision.question : null}
         </Text>
         {handled ? (
           <Button
-            label={showDetails ? "Hide details" : "Details"}
+            label={showDetails ? gt("Hide details") : gt("Details")}
             tone="text"
             size="compact"
             onPress={() => setExpanded(!expanded)}
@@ -169,7 +172,7 @@ export function DecisionThreadPanel(props: {
       {showDetails ? (
         <View className="gap-2">
           <Button
-            label={`Source: ${source?.title ?? "Open source task"}`}
+            label={gt("Source: {title}", { title: source?.title ?? gt("Open source task") })}
             tone="text"
             size="compact"
             onPress={() => openSource(sourceRef)}
@@ -177,14 +180,15 @@ export function DecisionThreadPanel(props: {
           <Text className="text-sm">{decision.question}</Text>
           {decision.finalAnswer && decision.status !== "completed" ? (
             <Text className="text-sm text-foreground-muted">
-              Previously confirmed: {decision.finalAnswer}
+              {gt("Previously confirmed: {answer}", { answer: decision.finalAnswer })}
             </Text>
           ) : null}
           {decision.status === "discussing" ? (
             <>
               <Text className="text-xs text-foreground-muted">
-                Continue discussing in chat. Only the conclusion you confirm below is returned to
-                the source task.
+                {gt(
+                  "Continue discussing in chat. Only the conclusion you confirm below is returned to the source task.",
+                )}
               </Text>
               {decision.options?.length ? (
                 <View className="flex-row flex-wrap gap-2">
@@ -200,8 +204,8 @@ export function DecisionThreadPanel(props: {
                 </View>
               ) : null}
               <TextInput
-                accessibilityLabel="Final decision"
-                placeholder="Write the conclusion to return…"
+                accessibilityLabel={gt("Final decision")}
+                placeholder={gt("Write the conclusion to return…")}
                 multiline
                 numberOfLines={3}
                 value={draft?.answer ?? ""}
@@ -212,7 +216,7 @@ export function DecisionThreadPanel(props: {
               />
               <View className="flex-row flex-wrap gap-2">
                 <Button
-                  label="Confirm and return"
+                  label={gt("Confirm and return")}
                   size="compact"
                   tone="primary"
                   loading={pending}
@@ -220,7 +224,7 @@ export function DecisionThreadPanel(props: {
                   onPress={() => void submit("confirm")}
                 />
                 <Button
-                  label="Cancel decision"
+                  label={gt("Cancel decision")}
                   size="compact"
                   tone="text"
                   disabled={pending || !canCancel}
@@ -234,11 +238,12 @@ export function DecisionThreadPanel(props: {
                 <Text className="text-sm">{decision.finalAnswer}</Text>
               ) : null}
               <Text className="text-xs text-foreground-muted">
-                This decision is closed. Reopen to revise it with the existing discussion. For a
-                different issue, ask the source task to open a new decision.
+                {gt(
+                  "This decision is closed. Reopen to revise it with the existing discussion. For a different issue, ask the source task to open a new decision.",
+                )}
               </Text>
               <Button
-                label="Reopen discussion"
+                label={gt("Reopen discussion")}
                 size="compact"
                 disabled={pending || !canReopen}
                 onPress={() => void submit("reopen")}
@@ -249,12 +254,12 @@ export function DecisionThreadPanel(props: {
       ) : null}
       {sourceDeleted ? (
         <Text accessibilityRole="alert" className="text-sm text-danger">
-          The source task was deleted. Your discussion is still available.
+          {gt("The source task was deleted. Your discussion is still available.")}
         </Text>
       ) : null}
       {decision.status === "cancelled" && decision.cancellationNotified === false ? (
         <Text accessibilityRole="alert" className="text-sm text-danger">
-          The source task could not be notified of this cancellation.
+          {gt("The source task could not be notified of this cancellation.")}
         </Text>
       ) : null}
       {error ? (

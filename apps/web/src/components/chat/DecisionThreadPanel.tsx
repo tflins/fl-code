@@ -1,3 +1,4 @@
+import { useGT, useMessages } from "gt-react";
 import { decisionStatusLabels } from "@t3tools/client-runtime/decision-presentation";
 import {
   DecisionDraft,
@@ -27,6 +28,8 @@ export function DecisionThreadPanel(props: {
   readonly threadRef: ScopedThreadRef;
   readonly decision: OrchestrationV2Decision;
 }) {
+  const gt = useGT();
+  const m = useMessages();
   const { threadRef, decision } = props;
   const sourceRef = { environmentId: threadRef.environmentId, threadId: decision.sourceThreadId };
   const source = useAtomValue(environmentThreadShells.threadShellAtom(sourceRef));
@@ -105,7 +108,7 @@ export function DecisionThreadPanel(props: {
       setError(
         cause instanceof Error
           ? cause.message
-          : "Could not update the decision. Your answer is kept here.",
+          : gt("Could not update the decision. Your answer is kept here."),
       );
       if (
         typeof cause === "object" &&
@@ -124,7 +127,7 @@ export function DecisionThreadPanel(props: {
     } else {
       setDraft(null);
       if (action === "cancel" && "sourceNotified" in result.value && !result.value.sourceNotified) {
-        setError("Decision cancelled. The source task could not be notified.");
+        setError(gt("Decision cancelled. The source task could not be notified."));
       }
     }
     inFlight.current = false;
@@ -132,15 +135,15 @@ export function DecisionThreadPanel(props: {
   }
 
   return (
-    <section aria-label="Decision" className="chat-content-lane my-3">
+    <section aria-label={gt("Decision")} className="chat-content-lane my-3">
       <div
         className={`rounded-lg border p-2.5 ${handled ? "border-border bg-muted/20" : "border-warning-foreground/25 bg-warning-foreground/5"}`}
       >
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
           <MessagesSquareIcon aria-hidden className="size-4 shrink-0 text-warning-foreground" />
-          <span className="font-medium text-warning-foreground">Decision</span>
+          <span className="font-medium text-warning-foreground">{gt("Decision")}</span>
           <span className="shrink-0 font-medium text-foreground">
-            {decisionStatusLabels[decision.status]}
+            {m(decisionStatusLabels[decision.status])}
           </span>
           <span className="min-w-0 flex-1 truncate">{!showDetails ? decision.question : null}</span>
           {handled ? (
@@ -150,7 +153,7 @@ export function DecisionThreadPanel(props: {
               aria-expanded={showDetails}
               onClick={() => setExpanded(!expanded)}
             >
-              {showDetails ? "Hide details" : "Details"}
+              {showDetails ? gt("Hide details") : gt("Details")}
             </Button>
           ) : null}
         </div>
@@ -161,19 +164,20 @@ export function DecisionThreadPanel(props: {
               params={buildThreadRouteParams(sourceRef)}
               className="mt-2 block truncate text-xs underline underline-offset-2"
             >
-              Source: {source?.title ?? "Open source task"}
+              {gt("Source: {title}", { title: source?.title ?? gt("Open source task") })}
             </Link>
             <p className="my-2 text-sm whitespace-pre-wrap">{decision.question}</p>
             {decision.finalAnswer && decision.status !== "completed" ? (
               <p className="mb-2 text-sm text-muted-foreground">
-                Previously confirmed: {decision.finalAnswer}
+                {gt("Previously confirmed: {answer}", { answer: decision.finalAnswer })}
               </p>
             ) : null}
             {decision.status === "discussing" ? (
               <>
                 <p className="mb-2 text-xs text-muted-foreground">
-                  Continue discussing in chat. Only the conclusion you confirm below is returned to
-                  the source task.
+                  {gt(
+                    "Continue discussing in chat. Only the conclusion you confirm below is returned to the source task.",
+                  )}
                 </p>
                 {decision.options?.length ? (
                   <div className="mb-2 flex flex-wrap gap-2">
@@ -191,8 +195,8 @@ export function DecisionThreadPanel(props: {
                   </div>
                 ) : null}
                 <Textarea
-                  aria-label="Final decision"
-                  placeholder="Write the conclusion to return…"
+                  aria-label={gt("Final decision")}
+                  placeholder={gt("Write the conclusion to return…")}
                   rows={3}
                   value={draft?.answer ?? ""}
                   disabled={pending || !canConfirm}
@@ -209,7 +213,7 @@ export function DecisionThreadPanel(props: {
                     disabled={pending || !canConfirm || !draft?.answer.trim() || sourceDeleted}
                     onClick={() => void submit("confirm")}
                   >
-                    {pending ? "Saving…" : "Confirm and return"}
+                    {pending ? gt("Saving…") : gt("Confirm and return")}
                   </Button>
                   <Button
                     size="sm"
@@ -217,7 +221,7 @@ export function DecisionThreadPanel(props: {
                     disabled={pending || !canCancel}
                     onClick={() => void submit("cancel")}
                   >
-                    Cancel decision
+                    {gt("Cancel decision")}
                   </Button>
                 </div>
               </>
@@ -227,8 +231,9 @@ export function DecisionThreadPanel(props: {
                   <p className="mb-2 text-sm whitespace-pre-wrap">{decision.finalAnswer}</p>
                 ) : null}
                 <p className="my-2 text-xs text-muted-foreground">
-                  This decision is closed. Reopen to revise it with the existing discussion. For a
-                  different issue, ask the source task to open a new decision.
+                  {gt(
+                    "This decision is closed. Reopen to revise it with the existing discussion. For a different issue, ask the source task to open a new decision.",
+                  )}
                 </p>
                 <Button
                   size="sm"
@@ -236,7 +241,7 @@ export function DecisionThreadPanel(props: {
                   disabled={pending || !canReopen}
                   onClick={() => void submit("reopen")}
                 >
-                  Reopen discussion
+                  {gt("Reopen discussion")}
                 </Button>
               </>
             )}
@@ -244,12 +249,12 @@ export function DecisionThreadPanel(props: {
         ) : null}
         {sourceDeleted ? (
           <p role="alert" className="my-2 text-sm text-destructive">
-            The source task was deleted. Your discussion is still available.
+            {gt("The source task was deleted. Your discussion is still available.")}
           </p>
         ) : null}
         {decision.status === "cancelled" && decision.cancellationNotified === false ? (
           <p role="alert" className="my-2 text-sm text-destructive">
-            The source task could not be notified of this cancellation.
+            {gt("The source task could not be notified of this cancellation.")}
           </p>
         ) : null}
         {error ? (

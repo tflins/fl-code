@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import type {
   AnnotationSide,
   CodeViewDiffItem,
@@ -146,6 +147,7 @@ export function AnnotatableCodeView({
   askParentPanel,
   onFileCollapsedChange,
 }: AnnotatableCodeViewProps) {
+  const gt = useGT();
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const removeReviewComment = useComposerDraftStore((store) => store.removeReviewComment);
   const reviewComments = useComposerDraftStore(
@@ -440,7 +442,7 @@ export function AnnotatableCodeView({
                   {...(entry.kind === "draft" && onAskAboutSelection && askParentPanel
                     ? {
                         secondaryAction: {
-                          label: "Ask",
+                          label: gt("Ask"),
                           icon: <MessageCircle className="size-3" />,
                           allowEmpty: true,
                           onAction: (text: string) => {

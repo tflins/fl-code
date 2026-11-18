@@ -1,3 +1,5 @@
+import { mFallback, msg } from "gt-i18n";
+import type { MFunctionType } from "gt-i18n/types";
 import type {
   EnvironmentId,
   MessageId,
@@ -144,118 +146,133 @@ export function mergeSubagentHandoffPage(
 
 export function formatSubagentExecutionStatus(
   status: OrchestrationV2SubagentHandoff["executionStatus"],
+  resolve: MFunctionType = mFallback,
 ): string {
   switch (status) {
     case "pending":
-      return "Queued";
+      return resolve(msg("Queued"));
     case "running":
-      return "Running";
+      return resolve(msg("Running"));
     case "waiting":
-      return "Waiting";
+      return resolve(msg("Waiting"));
     case "idle":
-      return "Idle";
+      return resolve(msg("Idle"));
     case "completed":
-      return "Completed";
+      return resolve(msg("Completed"));
     case "failed":
-      return "Failed";
+      return resolve(msg("Failed"));
     case "cancelled":
-      return "Cancelled";
+      return resolve(msg("Cancelled"));
     case "interrupted":
-      return "Interrupted";
+      return resolve(msg("Interrupted"));
   }
 }
 
 export function formatSubagentDelivery(
   delivery: OrchestrationV2SubagentHandoff["completionDelivery"],
+  resolve: MFunctionType = mFallback,
 ): { readonly label: string; readonly detail: string } {
   if (delivery === null) {
     return {
-      label: "Delivery unknown",
-      detail: "No completion delivery record was saved for this task.",
+      label: resolve(msg("Delivery unknown")),
+      detail: resolve(msg("No completion delivery record was saved for this task.")),
     };
   }
   switch (delivery.state) {
     case "pending":
       return {
-        label: "Not delivered yet",
-        detail: "The parent turn has not claimed this result.",
+        label: resolve(msg("Not delivered yet")),
+        detail: resolve(msg("The parent turn has not claimed this result.")),
       };
     case "claimed":
       return {
-        label: "Claimed by parent",
-        detail: "The parent run claimed this result; it has not been recorded as delivered.",
+        label: resolve(msg("Claimed by parent")),
+        detail: resolve(
+          msg("The parent run claimed this result; it has not been recorded as delivered."),
+        ),
       };
     case "acknowledged":
       return {
-        label: "Acknowledged by parent",
-        detail: "The parent turn confirmed receipt; acknowledgement does not mean understanding.",
+        label: resolve(msg("Acknowledged by parent")),
+        detail: resolve(
+          msg("The parent turn confirmed receipt; acknowledgement does not mean understanding."),
+        ),
       };
     case "delivered":
       return {
-        label: "Recorded as delivered",
-        detail: "The server recorded delivery through the parent turn, not that it was adopted.",
+        label: resolve(msg("Recorded as delivered")),
+        detail: resolve(
+          msg("The server recorded delivery through the parent turn, not that it was adopted."),
+        ),
       };
     case "disposed":
       return {
-        label: "Not sent to parent",
-        detail: "The server recorded that this result was not included in the parent turn.",
+        label: resolve(msg("Not sent to parent")),
+        detail: resolve(
+          msg("The server recorded that this result was not included in the parent turn."),
+        ),
       };
   }
 }
 
 export function formatSubagentRequestedModel(
   requested: OrchestrationV2SubagentHandoff["requestedModel"],
+  resolve: MFunctionType = mFallback,
 ): string {
-  if (requested === null) return "Not recorded";
+  if (requested === null) return resolve(msg("Not recorded"));
   if (requested.selection !== null) return requested.selection.model;
-  if (requested.model === null) return "Not recorded";
+  if (requested.model === null) return resolve(msg("Not recorded"));
   return `${requested.model} (selection details unavailable)`;
 }
 
 export function formatSubagentExecutedModel(
   executed: OrchestrationV2SubagentHandoff["executedModel"],
+  resolve: MFunctionType = mFallback,
 ): string {
-  return executed ?? "Unknown";
+  return executed ?? resolve(msg("Unknown"));
 }
 
 export function formatSubagentResultSource(
   source: OrchestrationV2SubagentHandoff["result"]["source"],
+  resolve: MFunctionType = mFallback,
 ): string {
   switch (source) {
     case "child_run":
-      return "Original child result";
+      return resolve(msg("Original child result"));
     case "parent_record":
-      return "Saved parent result record";
+      return resolve(msg("Saved parent result record"));
     case null:
-      return "No final result recorded";
+      return resolve(msg("No final result recorded"));
   }
 }
 
 export function formatSubagentChildThreadState(
   state: OrchestrationV2SubagentHandoff["childThreadState"],
+  resolve: MFunctionType = mFallback,
 ): string {
   switch (state) {
     case "available":
-      return "Child thread available";
+      return resolve(msg("Child thread available"));
     case "deleted":
-      return "Child thread deleted; its original result is unavailable";
+      return resolve(msg("Child thread deleted; its original result is unavailable"));
     case "missing":
-      return "Child thread missing; its original result is unavailable";
+      return resolve(msg("Child thread missing; its original result is unavailable"));
     case "unknown":
-      return "Child thread ownership could not be verified";
+      return resolve(msg("Child thread ownership could not be verified"));
   }
 }
 
 export function formatSubagentRoundAssociation(
   association: OrchestrationV2SubagentHandoff["roundAssociation"],
+  resolve: MFunctionType = mFallback,
 ): string {
   switch (association) {
     case "run_delegated_task_id":
-      return "Round linked by delegated task id";
+      return resolve(msg("Round linked by delegated task id"));
     case "spawn_transfer":
-      return "Round linked by the task's spawn transfer";
+      return resolve(msg("Round linked by the task's spawn transfer"));
     case "unavailable":
-      return "Round location unavailable";
+      return resolve(msg("Round location unavailable"));
   }
 }
 

@@ -1,3 +1,6 @@
+import { msg } from "gt-react";
+import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { m } from "~/i18n/messages";
 import {
   codeQaSideChatThreadId,
   type ModelSelection,
@@ -59,7 +62,7 @@ export function useSideChat(input: {
   ) => {
     if (isAtomCommandInterrupted(failure)) return;
     const error = squashAtomCommandFailure(failure);
-    input.onError(error instanceof Error ? error.message : fallback);
+    input.onError(thrownErrorMessage(error, m) ?? fallback);
   };
 
   const isCodeQaSideChatOf = (
@@ -102,7 +105,7 @@ export function useSideChat(input: {
       input: { sourceThreadId: threadRef.threadId, targetThreadId, title },
     });
     if (fork._tag === "Failure") {
-      reportFailure(fork, "Could not start a side chat.");
+      reportFailure(fork, m(msg("Could not start a side chat.")));
       return null;
     }
     // Drops the empty side chat a failed start leaves behind; one that got its message stays.
@@ -113,13 +116,13 @@ export function useSideChat(input: {
       });
     const targetRef = scopeThreadRef(threadRef.environmentId, targetThreadId);
     if (!(await waitForThreadShell(targetRef))) {
-      input.onError("The side chat was created, but it did not reach this client.");
+      input.onError(m(msg("The side chat was created, but it did not reach this client.")));
       discard();
       return null;
     }
     const sideChat = readThreadShell(targetRef);
     if (sideChat === null) {
-      input.onError("The side chat is no longer available.");
+      input.onError(m(msg("The side chat is no longer available.")));
       discard();
       return null;
     }
@@ -129,7 +132,7 @@ export function useSideChat(input: {
         input: { threadId: targetThreadId, runtimeMode, createdAt: new Date().toISOString() },
       });
       if (mode._tag === "Failure") {
-        reportFailure(mode, "Could not set the side chat's permission mode.");
+        reportFailure(mode, m(msg("Could not set the side chat's permission mode.")));
         discard();
         return null;
       }
@@ -143,14 +146,14 @@ export function useSideChat(input: {
           threadId: targetThreadId,
           message: { messageId: newMessageId(), role: "user", text, attachments: [] },
           ...(modelSelection === undefined ? {} : { modelSelection }),
-          titleSeed: deriveThreadTitleSeed({ text, attachments: [] }),
+          titleSeed: deriveThreadTitleSeed({ text, attachments: [] }, m),
           runtimeMode,
           interactionMode: "default",
           createdAt: new Date().toISOString(),
         },
       });
       if (turn._tag === "Failure") {
-        reportFailure(turn, "Could not send the side chat message.");
+        reportFailure(turn, m(msg("Could not send the side chat message.")));
         discard();
         return null;
       }
@@ -172,6 +175,7 @@ export function useSideChat(input: {
       input: {
         sourceThreadId: parentRef.threadId,
         targetThreadId: targetRef.threadId,
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- persisted thread title
         title: "Side chat",
         codeQa: true,
       },
@@ -179,18 +183,20 @@ export function useSideChat(input: {
     if (fork._tag === "Failure") {
       const concurrent = findAskSideChat(parentRef);
       if (concurrent !== null) return concurrent;
-      reportFailure(fork, "Could not start the code Q&A side chat.");
+      reportFailure(fork, m(msg("Could not start the code Q&A side chat.")));
       return null;
     }
     // The server advances the generation after a deleted chat, so wait for the live child.
     const liveRef = await waitForCodeQaSideChat(parentRef);
     if (liveRef === null) {
-      input.onError("The code Q&A side chat was created, but it did not reach this client.");
+      input.onError(
+        m(msg("The code Q&A side chat was created, but it did not reach this client.")),
+      );
       return null;
     }
     const sideChat = readThreadShell(liveRef);
     if (sideChat === null || !isCodeQaSideChatOf(sideChat, parentRef)) {
-      input.onError("The code Q&A side chat is not available for this thread.");
+      input.onError(m(msg("The code Q&A side chat is not available for this thread.")));
       return null;
     }
     const store = useComposerDraftStore.getState();

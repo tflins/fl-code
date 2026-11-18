@@ -1,6 +1,7 @@
 import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceColumns";
 import Constants from "expo-constants";
 import { Image } from "expo-image";
+import { useGT } from "gt-react-native";
 import { useState } from "react";
 import { Platform, View } from "react-native";
 
@@ -25,7 +26,12 @@ export function CompactBrandTitle(
     readonly fit?: boolean;
   } = {},
 ) {
-  const stageLabel = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
+  const gt = useGT();
+  const stage = resolveMobileStageLabel(Constants.expoConfig?.extra?.appVariant);
+  const stageLabel =
+    stage === "Dev"
+      ? gt("Dev", { $context: "app release stage badge" })
+      : gt("Nightly", { $context: "app release stage badge" });
   const titleOffset = brandTitleOffset();
   const { scale } = useAndroidControlSizing();
   const [availableWidth, setAvailableWidth] = useState<number | null>(null);
@@ -40,7 +46,9 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? `${MOBILE_APP_BASE_NAME}, Threads`}
+      accessibilityLabel={
+        props.accessibilityLabel ?? gt("{appName}, Threads", { appName: MOBILE_APP_BASE_NAME })
+      }
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"

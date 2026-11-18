@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useGT, useMessages } from "gt-react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -41,7 +42,8 @@ type AgentTiming = Pick<OrchestrationV2Subagent, "status" | "startedAt" | "compl
 function SubagentElapsed({ agents }: { readonly agents: ReadonlyArray<AgentTiming> }) {
   const live = agents.some((agent) => isActiveSubagentStatus(agent.status));
   const nowMs = useVisibleSecondClock(live);
-  const elapsed = subagentCardElapsed(agents, nowMs);
+  const messages = useMessages();
+  const elapsed = subagentCardElapsed(agents, nowMs, messages);
   return elapsed ? (
     <Text className="shrink-0 text-xs tabular-nums text-foreground-muted">{elapsed}</Text>
   ) : null;
@@ -110,6 +112,8 @@ export function ThreadSubagentGroup(props: {
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
   const [openHandoffs, setOpenHandoffs] = useState<Readonly<Record<string, boolean>>>({});
+  const gt = useGT();
+  const messages = useMessages();
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
@@ -136,8 +140,13 @@ export function ThreadSubagentGroup(props: {
     };
   });
   const grouped = agents.length > 1;
-  const label = `${agents.length} subagents`;
-  const summary = summarizeSubagentStatuses(agents.map((agent) => agent.status));
+  const label = gt("{count, plural, one {{count} subagent} other {{count} subagents}}", {
+    count: agents.length,
+  });
+  const summary = summarizeSubagentStatuses(
+    agents.map((agent) => agent.status),
+    messages,
+  );
   const expanded = props.expandedRows[props.anchorKey] ?? false;
   const serverConfigs = useServerConfigs();
   // A task in a linked environment runs a provider instance of that environment.
@@ -172,7 +181,7 @@ export function ThreadSubagentGroup(props: {
       {grouped ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={`${label}, ${summary}`}
+          accessibilityLabel={gt("{label}, {summary}", { label, summary })}
           accessibilityState={{ expanded }}
           onPress={() => props.onToggleRow(props.anchorKey, props.anchorKey)}
           className="min-h-14 flex-row items-center gap-3 rounded-lg py-2 active:bg-subtle"
@@ -229,10 +238,10 @@ export function ThreadSubagentGroup(props: {
                   accessibilityRole={target === null ? undefined : "link"}
                   accessibilityHint={
                     target !== null
-                      ? "Opens this agent's thread"
+                      ? gt("Opens this agent's thread")
                       : agent.remoteChild !== undefined
-                        ? `Runs on ${agent.remoteChild.label}`
-                        : "Provider-managed agent"
+                        ? gt("Runs on {label}", { label: agent.remoteChild.label })
+                        : gt("Provider-managed agent")
                   }
                   disabled={target === null}
                   onPress={() => {
@@ -259,7 +268,7 @@ export function ThreadSubagentGroup(props: {
                       accessibilityRole="button"
                       accessibilityState={{ expanded: handoffOpen }}
                       accessibilityLabel={
-                        handoffOpen ? "Hide handoff records" : "Show handoff records"
+                        handoffOpen ? gt("Hide handoff records") : gt("Show handoff records")
                       }
                       onPress={() =>
                         setOpenHandoffs((current) => ({
@@ -275,7 +284,7 @@ export function ThreadSubagentGroup(props: {
                         tintColor={props.iconSubtleColor}
                       />
                       <Text className="text-2xs text-foreground-muted">
-                        {handoffOpen ? "Hide handoff records" : "Show handoff records"}
+                        {handoffOpen ? gt("Hide handoff records") : gt("Show handoff records")}
                       </Text>
                     </Pressable>
                     {handoffOpen ? (

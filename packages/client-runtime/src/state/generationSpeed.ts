@@ -4,7 +4,8 @@ import {
   type OrchestrationV2ProviderTurn,
 } from "@t3tools/contracts";
 
-export const GENERATION_SPEED_PLACEHOLDER = "≈ … tok/s";
+const TOKENS_PER_SECOND_UNIT = "tok/s";
+export const GENERATION_SPEED_PLACEHOLDER = `≈ … ${TOKENS_PER_SECOND_UNIT}`;
 
 export interface GenerationSpeedPresentation {
   readonly kind: "live" | "average";
@@ -67,7 +68,7 @@ export function presentCompletedTurn(
   const outputTokens = estimate.outputTokens.toLocaleString("en-US");
   return {
     kind: "average",
-    label: `≈ ${rate} tok/s`,
+    label: `≈ ${rate} ${TOKENS_PER_SECOND_UNIT}`,
     details:
       `Average estimated output throughput: ${rate} tokens per second. ` +
       `${outputTokens} output tokens over ${durationSeconds} seconds of effective turn time. ` +
@@ -123,7 +124,7 @@ export function presentLiveWindow(
       : Math.round(estimatedTokens).toLocaleString("en-US");
   return {
     kind: "live",
-    label: `≈ ${rate} tok/s`,
+    label: `≈ ${rate} ${TOKENS_PER_SECOND_UNIT}`,
     details:
       `Most recent estimated output throughput: ${rate} tokens per second over ${durationSeconds} seconds. ` +
       `Counts streamed assistant text, visible reasoning, and plans, estimated as ${outputTokens} tokens with a multilingual character heuristic rather than the provider tokenizer. ` +

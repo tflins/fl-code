@@ -1,3 +1,7 @@
+import { MOBILE_APP_BASE_NAME } from "../../lib/mobileBranding";
+import { msg } from "gt-react-native";
+
+import { m } from "../../i18n/messages";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -67,8 +71,8 @@ export function buildShowcaseAgentActivity(
     });
   }
   return {
-    title: "FL Code",
-    subtitle: "Agent work in progress",
+    title: MOBILE_APP_BASE_NAME,
+    subtitle: m(msg("Agent work in progress")),
     activeCount: rows.filter((row) => ACTIVE_PHASES.has(row.phase)).length,
     updatedAt: new Date(now).toISOString(),
     activities: rows,

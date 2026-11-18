@@ -1,3 +1,4 @@
+import { useGT } from "gt-react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { MessageCircle, XIcon } from "lucide-react";
 import { useEffect } from "react";
@@ -18,6 +19,7 @@ export function DiffAskPanel(props: {
   readonly parentPanel: SideChatParentPanel;
   readonly onClose: () => void;
 }) {
+  const gt = useGT();
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the parent as this embedded chat's panel host
   useEffect(
     () => hostRightPanel(props.sideChatRef, props.parentRef),
@@ -34,14 +36,14 @@ export function DiffAskPanel(props: {
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/40 px-3">
         <MessageCircle className="size-3.5 shrink-0 text-primary/70" aria-hidden="true" />
-        <span className="shrink-0 text-xs font-medium">Ask about this diff</span>
+        <span className="shrink-0 text-xs font-medium">{gt("Ask about this diff")}</span>
         <span className="min-w-0 flex-1 truncate font-mono text-3xs text-muted-foreground">
           {props.filePath} · {props.rangeLabel}
         </span>
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label="Close diff question"
+          aria-label={gt("Close diff question")}
           onClick={props.onClose}
         >
           <XIcon />
@@ -60,8 +62,9 @@ export function DiffAskPanel(props: {
         </BackgroundThreadContext>
       </div>
       <p className="shrink-0 border-t border-border/40 px-3 py-1.5 text-3xs text-muted-foreground">
-        Read-only Q&A: the server blocks file changes, side-effecting tools, and cross-thread
-        actions. Codex and Claude sessions can enforce this; other providers are refused.
+        {gt(
+          "Read-only Q&A: the server blocks file changes, side-effecting tools, and cross-thread actions. Codex and Claude sessions can enforce this; other providers are refused.",
+        )}
       </p>
     </div>
   );
