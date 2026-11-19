@@ -127,8 +127,9 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
         ...(input.codeQa === true
           ? { runtimeMode: "approval-required" as const, interactionMode: "default" as const }
           : {}),
-        // The source's title job completes only on the source thread.
+        // The source's title job and rename stay with the source thread.
         titleRegeneration: null,
+        titleRenamed: false,
         activeProviderThreadId: null,
         lineage: {
           parentThreadId: input.sourceProjection.thread.id,

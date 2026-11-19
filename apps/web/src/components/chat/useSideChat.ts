@@ -8,7 +8,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { deriveThreadTitleSeed } from "@t3tools/client-runtime/operations";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import {
   type AtomCommandResult,
   isAtomCommandInterrupted,
@@ -31,6 +31,11 @@ import {
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+
+export type SideChatMessage = Pick<
+  StartThreadTurnInput["message"],
+  "text" | "attachments" | "context"
+> & { readonly titleSeed: string };
 
 /** `open` sends with the parent composer's settings; `openAsk` reuses one side chat for diff questions. */
 export function useSideChat(input: {
@@ -97,7 +102,7 @@ export function useSideChat(input: {
     title: string,
     runtimeMode: RuntimeMode,
     modelSelection: ModelSelection | undefined,
-    prompt: string | undefined,
+    message: SideChatMessage | undefined,
   ) => {
     const targetThreadId = newThreadId();
     const fork = await forkSideChat({
@@ -137,16 +142,16 @@ export function useSideChat(input: {
         return null;
       }
     }
-    const text = prompt?.trim();
     // Send before showing the tab: closing a tab whose side chat has no run deletes it.
-    if (text) {
+    if (message) {
+      const { titleSeed, ...content } = message;
       const turn = await startThreadTurn({
         environmentId: threadRef.environmentId,
         input: {
           threadId: targetThreadId,
-          message: { messageId: newMessageId(), role: "user", text, attachments: [] },
+          message: { messageId: newMessageId(), role: "user", ...content },
           ...(modelSelection === undefined ? {} : { modelSelection }),
-          titleSeed: deriveThreadTitleSeed({ text, attachments: [] }, m),
+          titleSeed,
           runtimeMode,
           interactionMode: "default",
           createdAt: new Date().toISOString(),
@@ -212,14 +217,14 @@ export function useSideChat(input: {
     return liveRef;
   };
 
-  const start = async (threadRef: ScopedThreadRef, prompt: string | undefined) => {
+  const start = async (threadRef: ScopedThreadRef, message: SideChatMessage | undefined) => {
     const { runtimeMode, modelSelection } = input.readSettings();
     const created = await createSideChat(
       threadRef,
       "Side chat",
       runtimeMode,
       modelSelection,
-      prompt,
+      message,
     );
     if (created === null) return false;
     useRightPanelStore.getState().openSideChat(threadRef, created.ref.threadId);
@@ -263,11 +268,11 @@ export function useSideChat(input: {
     return sideRef;
   };
 
-  const open = async (prompt?: string) => {
+  const open = async (message?: SideChatMessage) => {
     const { threadRef } = input;
     if (!threadRef || pendingRef.current) return false;
     pendingRef.current = true;
-    return start(threadRef, prompt).finally(() => {
+    return start(threadRef, message).finally(() => {
       pendingRef.current = false;
     });
   };
