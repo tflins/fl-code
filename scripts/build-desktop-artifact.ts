@@ -2850,6 +2850,8 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     const displayName = resolveDesktopAppDisplayName(version);
+    const forkBuild = /-tflins\.(?:[1-9]\d*|verify\.[0-9a-f]{7,40})$/u.test(version);
+    if (forkBuild) buildConfig.forceCodeSigning = true;
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
@@ -2896,6 +2898,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(forkBuild && !signed ? { identity: "-", notarize: false } : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

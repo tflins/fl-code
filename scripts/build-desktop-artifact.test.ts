@@ -567,6 +567,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
       assert.isNull(manualInstall.publish);
       assert.equal(manualInstall.productName, "FL Code (Nightly)");
+      assert.nestedPropertyVal(manualInstall, "mac.identity", "-");
+      assert.nestedPropertyVal(manualInstall, "mac.notarize", false);
       const macConfig = manualInstall.mac as {
         extendInfo: {
           CFBundleDisplayName: string;
@@ -593,6 +595,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  it.effect("signs fork verification bundles without discovering a signing certificate", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig(
+        "mac",
+        "dir",
+        "0.1.8-nightly.20261109.4399-tflins.verify.7fc0a001bb97",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.propertyVal(config, "forceCodeSigning", true);
+      assert.nestedPropertyVal(config, "mac.identity", "-");
+    }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>

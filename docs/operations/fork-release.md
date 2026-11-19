@@ -17,7 +17,7 @@ vp run check:changed
 git push origin main
 ```
 
-主线推送后，GitHub Actions 构建 macOS Apple Silicon 的 DMG 和 ZIP，检查包内版本与应用 ID，从 ZIP 解压应用并用隔离测试数据启动验证，生成 SHA256SUMS 并保存 artifacts。本地检查及这次构建验证都通过后，在 Actions 中手动运行 **Fork Desktop Release**，保持 `tag` 为空并启用 `publish`。工作流从同一上游基线的已发布版本计算下一个连续 `N`，再为准确的源码提交创建版本标签、上传草稿 Release 并公开。发布说明记录完整源码提交。默认仅使用仓库提供的 `GITHUB_TOKEN`，不需要个人访问令牌或官方发布凭据。
+主线推送后，GitHub Actions 构建 macOS Apple Silicon 的 DMG 和 ZIP，从 ZIP 解压应用并校验整包签名、版本和应用 ID，再用隔离测试数据启动验证，生成 SHA256SUMS 并保存 artifacts。本地检查及这次构建验证都通过后，在 Actions 中手动运行 **Fork Desktop Release**，保持 `tag` 为空并启用 `publish`。工作流从同一上游基线的已发布版本计算下一个连续 `N`，再为准确的源码提交创建版本标签、上传草稿 Release 并公开。发布说明记录完整源码提交。默认仅使用仓库提供的 `GITHUB_TOKEN`，不需要个人访问令牌或官方发布凭据。
 
 手动运行时可以指定已存在的标签进行复验；`tag` 为空且未勾选 `publish` 只构建验证包。启用 `publish` 后，空标签会生成下一个连续版本，显式标签则只发布该标签。`tflins-v*` 标签推送属于显式发布入口。失败或重跑不会消耗新的版本号；若 Release 已经公开，应发布下一个版本。不要移动已经发布的标签。
 
@@ -25,7 +25,7 @@ git push origin main
 
 仓库已从 `tflins/t3code` 更名为 `tflins/fl-code`。旧版更新入口通过 GitHub 重定向继续访问同一仓库及 Release；不要重新创建或复用 `tflins/t3code`，否则会破坏旧版更新链路。
 
-当前流程未配置 Apple Developer ID 签名和公证，因此不启用 Electron 的签名自动更新源。`T3CODE_DESKTOP_DISABLE_UPDATE_FEED=true` 继续禁止包内 `app-update.yml`，避免把未签名构建接入官方更新通道。
+定制版在生成 DMG 和 ZIP 前对整个 `.app` 及其嵌套代码做 ad hoc 签名，以满足 macOS 系统通知等功能对有效签名的要求。首次使用重新签名的应用时，macOS 可能再次请求通知权限。当前流程未配置 Apple Developer ID 和公证，定制版使用自己的更新器，`T3CODE_DESKTOP_DISABLE_UPDATE_FEED=true` 禁止生成包内 `app-update.yml`。
 
 定制版从包含自更新器的版本开始，从 GitHub API 查询 `tflins-v*` 预发布，只接受同一 Release 中的 Apple Silicon ZIP 和 `SHA256SUMS`。应用校验 SHA256、版本、应用 ID 和可执行文件后，在应用所在卷解压临时目录，递归清除 quarantine，退出后替换原 `.app` 并重启。安装目录当前用户可写时不需要 `sudo`，也不需要手工执行 `xattr`。
 
