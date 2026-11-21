@@ -203,7 +203,7 @@ describe("diff selection questions", () => {
         [],
         {
           onAskAboutSelection,
-          askParentPanel: { openToolDiff: () => {}, runShellCommand: () => {} },
+          askParentPanel: { hostRef: parentRef, openToolDiff: () => {}, runShellCommand: () => {} },
         },
         parentRef,
       ),

@@ -306,6 +306,7 @@ it.each([
           searchQuery="Retention"
           onHighlight={() => {}}
           onSelect={onSelect}
+          onContextMenu={() => {}}
           onFileDropThreads={() => {}}
         />
       ) : (
