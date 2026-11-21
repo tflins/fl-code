@@ -26,15 +26,16 @@ import type { ThreadFeedActivity } from "../../lib/threadActivity";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
-import { useEnvironments } from "../../state/environments";
 import { useServerConfigs } from "../../state/entities";
 import { SubagentRow } from "./SubagentRow";
 import { SubagentHandoffDetails } from "./SubagentHandoffDetails";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import { subagentThreadTarget } from "./threadAgentsPresentation";
+import { useLinkedThreadReach } from "../../state/linkedThread";
 import { WorkLogBlock } from "./work-log-layout";
 
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
+import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
 type SubagentItem = Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
 type AgentTiming = Pick<OrchestrationV2Subagent, "status" | "startedAt" | "completedAt">;
@@ -117,6 +118,7 @@ export function ThreadSubagentGroup(props: {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
+  const openLinkedRead = useOpenLinkedThreadRead();
   const members = props.activities.flatMap(({ projectedItem }) =>
     projectedItem.item.type === "subagent" ? [projectedItem.item] : [],
   );
@@ -124,7 +126,6 @@ export function ThreadSubagentGroup(props: {
     environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, members[0]!.threadId)),
     (thread) => thread?.projection.subagents,
   );
-  const { presentationById } = useEnvironments();
   const agents = members.map((item) => {
     const live = liveAgents?.find((agent) => agent.id === item.subagentId);
     return {
@@ -139,6 +140,7 @@ export function ThreadSubagentGroup(props: {
       modelSelection: live?.modelSelection,
     };
   });
+  const reach = useLinkedThreadReach(props.environmentId, agents);
   const grouped = agents.length > 1;
   const label = gt("{count, plural, one {{count} subagent} other {{count} subagents}}", {
     count: agents.length,
@@ -153,7 +155,8 @@ export function ThreadSubagentGroup(props: {
   const configOf = (item: SubagentItem) =>
     item.remoteChild === undefined ? config : serverConfigs.get(item.remoteChild.environmentId);
   const canOpenThreadTarget = (target: SubagentHandoffNavigationTarget) =>
-    target.environmentId === props.environmentId || presentationById.has(target.environmentId);
+    target.environmentId === props.environmentId ||
+    reach.ownConnection(target.environmentId) !== undefined;
   const openThreadTarget = (target: SubagentHandoffNavigationTarget) => {
     if (!canOpenThreadTarget(target)) return false;
     if (
@@ -227,8 +230,11 @@ export function ThreadSubagentGroup(props: {
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
             // A task in a linked environment opens there, if this app is connected to it.
-            const target = subagentThreadTarget(agent, props.environmentId, (id) =>
-              presentationById.has(id),
+            const target = subagentThreadTarget(
+              agent,
+              props.environmentId,
+              reach.ownConnection,
+              reach.isLinked,
             );
             const handoffOpen = openHandoffs[agent.item.id] === true;
             return (
@@ -237,21 +243,43 @@ export function ThreadSubagentGroup(props: {
                   accessible
                   accessibilityRole={target === null ? undefined : "link"}
                   accessibilityHint={
-                    target !== null
-                      ? gt("Opens this agent's thread")
-                      : agent.remoteChild !== undefined
-                        ? gt("Runs on {label}", { label: agent.remoteChild.label })
-                        : gt("Provider-managed agent")
+                    target === null
+                      ? gt("Provider-managed agent")
+                      : target.linked === undefined
+                        ? gt("Opens this agent's thread")
+                        : gt("Opens a read-only view of this agent's thread on {label}", {
+                            label: target.linked.label,
+                          })
                   }
                   disabled={target === null}
                   onPress={() => {
                     if (target === null) return;
-                    openThreadTarget({
-                      environmentId: target.environmentId,
-                      threadId: target.threadId,
-                      runId: null,
-                      messageId: null,
-                    });
+                    if (target.linked !== undefined) {
+                      openLinkedRead(target, target.linked, agent.title, {
+                        source: {
+                          environmentId: props.environmentId,
+                          threadId: members[0]!.threadId,
+                        },
+                      });
+                      return;
+                    }
+                    if (
+                      openInspector(
+                        { environmentId: props.environmentId, threadId: members[0]!.threadId },
+                        {
+                          type: "thread",
+                          environmentId: target.environmentId,
+                          threadId: target.threadId,
+                        },
+                      )
+                    )
+                      return;
+                    navigation.dispatch(
+                      StackActions.push("Thread", {
+                        environmentId: String(target.environmentId),
+                        threadId: String(target.threadId),
+                      }),
+                    );
                   }}
                   className="rounded-lg px-3 py-3 active:bg-subtle"
                 >

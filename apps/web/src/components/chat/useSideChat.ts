@@ -227,7 +227,7 @@ export function useSideChat(input: {
       message,
     );
     if (created === null) return false;
-    useRightPanelStore.getState().openSideChat(threadRef, created.ref.threadId);
+    useRightPanelStore.getState().openThread(threadRef, created.ref.threadId);
     return true;
   };
 

@@ -5,7 +5,7 @@ import {
   replaceRejectedDecisionAttempt,
   type DecisionAction,
 } from "@t3tools/client-runtime/decision-submission";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { CommandId, type OrchestrationV2Decision, type ScopedThreadRef } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -16,7 +16,7 @@ import { AppText as Text, AppTextInput as TextInput } from "../../components/ui/
 import { Button } from "../../components/ui/Button";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { uuidv4 } from "../../lib/uuid";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
@@ -43,7 +43,7 @@ export function DecisionThreadPanel(props: {
   const cancel = useAtomCommand(threadEnvironment.cancelDecision, { reportFailure: false });
   const reopen = useAtomCommand(threadEnvironment.reopenDecision, { reportFailure: false });
   const preferences = useAtomValue(mobilePreferencesAtom);
-  const savePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const savePreferences = useAtomCommand(saveMobilePreferences);
   const openSource = useOpenLinkedThread();
   const draftKey = JSON.stringify([threadRef.environmentId, threadRef.threadId, decision.revision]);
   const draft = AsyncResult.isSuccess(preferences)
@@ -58,7 +58,7 @@ export function DecisionThreadPanel(props: {
   const showDetails = !handled || expanded;
 
   function saveDraft(value: typeof draft) {
-    savePreferences({
+    void savePreferences({
       transform: (current) => {
         const drafts = { ...current.decisionDrafts };
         if (value) drafts[draftKey] = value;
