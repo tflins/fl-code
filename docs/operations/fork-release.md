@@ -35,6 +35,18 @@ git push origin main
 
 GitHub 使用 `macos-26` 的 ARM64 runner，发布前还检查实际架构；runner 标签以 [GitHub 官方说明](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) 为准。Windows、Intel Mac、Linux 和手机打包不在此定制工作流范围内。
 
+## 本地签名安装
+
+macOS 可能在每次 ad hoc 版本升级后重新要求屏幕录制授权。仅在个人 Mac 上使用时，可以为支持本地签名的 FL Code Nightly 版本创建一份用固定证书签名的安装包。证书和私钥保存在本机钥匙串中，将证书信任限定为「代码签名」。用 `security find-identity -v -p codesigning` 查看证书的 40 位指纹。
+
+从已校验的 FL Code ZIP 中解压应用，再生成本地签名副本。
+
+```bash
+vp run dist:desktop:local-install '/path/to/FL Code (Nightly).app' '<certificate fingerprint>' /tmp
+```
+
+退出已安装的 FL Code，再用命令输出路径中的 `.app` 替换原应用。首次切换签名后，在 macOS 系统设置中为 SnapShots 重新授权一次。以后通过应用内「检查更新」升级时，更新器会使用同一证书签名，签名证书不可用或签名身份校验失败会中止更新。手动替换应用前也应使用同一证书生成本地签名副本。
+
 ## 同步官方
 
 在工作区干净时，从官方 Releases 核对最新已公开的 Nightly 标签，然后拉取并合并该标签，更新 `.github/fork-release.json` 的 `upstreamTag` 为同一标签。不要直接用尚未发布的 `upstream/main` 替代每夜版基线。

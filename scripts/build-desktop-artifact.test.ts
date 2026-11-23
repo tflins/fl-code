@@ -610,6 +610,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       );
       assert.propertyVal(config, "forceCodeSigning", true);
       assert.nestedPropertyVal(config, "mac.identity", "-");
+      assert.nestedPropertyVal(config, "mac.extendInfo.FLCodeLocalSigning", true);
     }),
   );
 

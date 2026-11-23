@@ -55,6 +55,7 @@
     "dist:desktop:artifact": "node scripts/build-desktop-artifact.ts",
     "dist:desktop:dmg": "node scripts/build-desktop-artifact.ts --platform mac --target dmg",
     "dist:desktop:dmg:arm64": "node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch arm64",
+    "dist:desktop:local-install": "node apps/desktop/src/updates/prepareForkMacInstall.ts",
     "dist:desktop:dmg:x64": "node scripts/build-desktop-artifact.ts --platform mac --target dmg --arch x64",
     "dist:desktop:linux": "node scripts/build-desktop-artifact.ts --platform linux --target AppImage --arch x64",
     "dist:gnome-extension": "gnome-extensions pack apps/desktop/gnome-extension --extra-source=captureService.js --extra-source=captureFeedback.js --extra-source=feedbackGeometry.js --out-dir=release --force",

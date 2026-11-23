@@ -2892,6 +2892,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       extendInfo: {
         CFBundleDisplayName: displayName,
         CFBundleName: displayName,
+        ...(forkBuild && !signed ? { FLCodeLocalSigning: true } : {}),
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:

@@ -5,8 +5,13 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { compareSemverVersions } from "@t3tools/shared/semver";
+import { isForkDesktopVersion } from "./forkRelease.ts";
 
 const FORK_BUNDLE_IDENTIFIER = "com.t3tools.t3code";
+const FORK_APP_NAME = "FL Code (Nightly).app";
+const LOCAL_SIGNING_RESOURCE = "fl-code-local-signing";
+const CODESIGN = "/usr/bin/codesign";
+const SIGNING_TIMEOUT_MS = 120_000;
 const UPDATE_DIRECTORY_PREFIX = ".t3code-update-";
 const CLEANUP_DIRECTORY_PREFIX = ".t3code-update-cleanup-";
 const STALE_UPDATE_AGE_MS = 24 * 60 * 60 * 1000;
@@ -67,6 +72,7 @@ export async function prepareMacUpdate(input: PrepareMacUpdateInput): Promise<Pr
       NodeFS.constants.X_OK,
     );
     await runFile("/usr/bin/xattr", ["-rd", "com.apple.quarantine", stagedAppPath]);
+    await preserveLocalMacSignature(input.appBundlePath, stagedAppPath);
     await NodeFSP.rm(zipPath, { force: true });
 
     const scriptPath = NodePath.join(workDirectory, "install.sh");
@@ -82,6 +88,29 @@ export async function prepareMacUpdate(input: PrepareMacUpdateInput): Promise<Pr
     };
   } catch (error) {
     await NodeFSP.rm(workDirectory, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function prepareLocalMacInstall(input: {
+  readonly sourceAppPath: string;
+  readonly outputDirectory: string;
+  readonly signingFingerprint: string;
+}): Promise<string> {
+  const fingerprint = parseSigningFingerprint(input.signingFingerprint);
+  const version = await readUpdateBundleVersion(input.sourceAppPath);
+  if (version === undefined || !isForkDesktopVersion(version)) {
+    throw new Error("Choose a packaged FL Code Nightly application as the signing source.");
+  }
+
+  const directory = await NodeFSP.mkdtemp(NodePath.join(input.outputDirectory, "fl-code-local-"));
+  const appPath = NodePath.join(directory, FORK_APP_NAME);
+  try {
+    await runFile("/usr/bin/ditto", [input.sourceAppPath, appPath]);
+    await signLocalMacCopy(appPath, fingerprint, signingRequirement(fingerprint));
+    return appPath;
+  } catch (error) {
+    await NodeFSP.rm(directory, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -167,12 +196,82 @@ async function readPlistValue(infoPlistPath: string, key: string): Promise<strin
   return output.trim();
 }
 
-async function runFile(file: string, args: ReadonlyArray<string>): Promise<string> {
+async function preserveLocalMacSignature(installed: string, staged: string): Promise<void> {
+  const marker = await NodeFSP.readFile(localSigningMarker(installed), "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (marker === undefined) return;
+
+  const fingerprint = parseSigningFingerprint(marker);
+  const expected = signingRequirement(fingerprint);
+  await runCodeSign(["--verify", "--strict", `-R=${expected}`, installed]);
+  const requirements = await runCodeSign(["--display", "--requirements", "-", installed]);
+  const designated = /^designated => (.+)$/mu.exec(requirements)?.[1];
+  if (designated === undefined) {
+    throw new Error("Could not read the installed application's signing requirement.");
+  }
+  await signLocalMacCopy(staged, fingerprint, `(${expected}) and (${designated})`);
+}
+
+async function signLocalMacCopy(
+  appPath: string,
+  fingerprint: string,
+  requirement: string,
+): Promise<void> {
+  const capability = await readPlistValue(
+    NodePath.join(appPath, "Contents", "Info.plist"),
+    "FLCodeLocalSigning",
+  ).catch((cause) => {
+    throw new Error("The FL Code build does not support local signing.", { cause });
+  });
+  if (capability !== "true") {
+    throw new Error("The FL Code build does not support local signing.");
+  }
+  await runCodeSign(["--verify", "--deep", "--strict", appPath]);
+  await NodeFSP.writeFile(localSigningMarker(appPath), `${fingerprint}\n`, { flag: "wx" });
+  // Retain the bundled helpers' signatures and the main executable's hardened runtime entitlements.
+  await runCodeSign([
+    "--force",
+    "--sign",
+    fingerprint,
+    "--timestamp=none",
+    "--preserve-metadata=identifier,entitlements,flags",
+    appPath,
+  ]);
+  await runCodeSign(["--verify", "--deep", "--strict", `-R=${requirement}`, appPath]);
+}
+
+function parseSigningFingerprint(value: string): string {
+  const fingerprint = value.trim().toUpperCase();
+  if (!/^[A-F0-9]{40}$/u.test(fingerprint)) {
+    throw new Error("The application has an invalid local signing fingerprint.");
+  }
+  return fingerprint;
+}
+
+function signingRequirement(fingerprint: string): string {
+  return `identifier "${FORK_BUNDLE_IDENTIFIER}" and certificate leaf = H"${fingerprint}"`;
+}
+
+function localSigningMarker(appPath: string): string {
+  return NodePath.join(appPath, "Contents", "Resources", LOCAL_SIGNING_RESOURCE);
+}
+
+function runCodeSign(args: ReadonlyArray<string>): Promise<string> {
+  return runFile(CODESIGN, args, SIGNING_TIMEOUT_MS);
+}
+
+async function runFile(
+  file: string,
+  args: ReadonlyArray<string>,
+  timeout?: number,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     NodeChildProcess.execFile(
       file,
       args,
-      { encoding: "utf8", maxBuffer: 1024 * 1024 },
+      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout },
       (error, stdout, stderr) => {
         if (error) {
           const detail = stderr.trim();

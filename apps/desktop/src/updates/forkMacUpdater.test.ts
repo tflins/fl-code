@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- This test builds a disposable macOS app bundle with the same OS tools as the updater.
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -37,7 +37,7 @@ async function writeTestAppBundle(
   await NodeFSP.chmod(executablePath, 0o755);
 }
 
-async function createPreparedMigrationFixture(root: string, currentVersion: string) {
+async function createMigrationFixture(root: string, currentVersion: string) {
   const installedAppPath = NodePath.join(root, "T3 Code (Nightly).app");
   const downloadedAppPath = NodePath.join(root, "download", "FL Code (Nightly).app");
   await writeTestAppBundle(installedAppPath, "T3 Code (Nightly)", currentVersion);
@@ -47,13 +47,17 @@ async function createPreparedMigrationFixture(root: string, currentVersion: stri
   await execFilePromise("/usr/bin/ditto", ["-c", "-k", "--keepParent", downloadedAppPath, zipPath]);
   const zipBytes = await NodeFSP.readFile(zipPath);
   const expectedSha256 = NodeCrypto.createHash("sha256").update(zipBytes).digest("hex");
-  const prepared = await prepareMacUpdate({
+  return {
     appBundlePath: installedAppPath,
     expectedSha256,
     expectedVersion: "1.2.3-tflins.7",
     zipBytes,
-  });
-  return { installedAppPath, prepared };
+  };
+}
+
+async function createPreparedMigrationFixture(root: string, currentVersion: string) {
+  const input = await createMigrationFixture(root, currentVersion);
+  return { installedAppPath: input.appBundlePath, prepared: await prepareMacUpdate(input) };
 }
 
 async function runMacUpdateScript(
@@ -120,6 +124,31 @@ it.effect("migrates a verified macOS update from the legacy app bundle name", ()
         });
         await assertRejects(NodeFSP.access(prepared.workDirectory));
         await NodeFSP.access(prepared.destinationAppPath);
+      } finally {
+        await NodeFSP.rm(root, { recursive: true, force: true });
+      }
+    });
+  }),
+);
+
+it.effect("rejects an update when the installed local signing identity is invalid", () =>
+  Effect.gen(function* () {
+    if ((yield* HostProcess.Platform) !== "darwin") return;
+
+    yield* Effect.promise(async () => {
+      const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-fork-updater-test-"));
+      try {
+        const input = await createMigrationFixture(root, "1.2.2-tflins.6");
+        const resources = NodePath.join(input.appBundlePath, "Contents", "Resources");
+        await NodeFSP.mkdir(resources);
+        await NodeFSP.writeFile(NodePath.join(resources, "fl-code-local-signing"), "invalid\n");
+
+        await expect(prepareMacUpdate(input)).rejects.toThrow(/invalid local signing fingerprint/);
+        assert.deepEqual((await NodeFSP.readdir(root)).sort(), [
+          "T3 Code (Nightly).app",
+          "download",
+          "update.zip",
+        ]);
       } finally {
         await NodeFSP.rm(root, { recursive: true, force: true });
       }
