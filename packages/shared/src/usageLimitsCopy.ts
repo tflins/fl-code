@@ -10,7 +10,6 @@ import type { MFunctionType } from "gt-i18n/types";
 import {
   collectExternalUsageLinks as collectExternalUsageLinksWith,
   cursorUsageWindowDetails as cursorUsageWindowDetailsBase,
-  displayUsageLimits,
   type LimitPool,
   type LimitPresentations,
   providersWithLimits,
@@ -93,8 +92,7 @@ export function collectLimitNotices(
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const limits = displayUsageLimits(provider);
-      if (limits?.unavailable?.reason === "unsupported") continue;
+      const limits = provider.usageLimits;
       const name = provider.displayName?.trim() || String(provider.driver);
       if (provider.accountUsageLimits) {
         notices.add(
@@ -107,6 +105,13 @@ export function collectLimitNotices(
             ),
           ),
         );
+      }
+      // A bare unsupported means the account has no limits; an external usage link shows its message.
+      if (
+        limits?.unavailable?.reason === "unsupported" &&
+        (!limits.unavailable.message || limits.externalUsage)
+      ) {
+        continue;
       }
       const notice = limits ? limitsNotice(limits, resolve) : null;
       if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
