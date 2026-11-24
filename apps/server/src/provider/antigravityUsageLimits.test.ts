@@ -189,12 +189,13 @@ describe("Antigravity subscription limits", () => {
       );
       const address = proxy.address();
       if (address === null || typeof address === "string") throw new Error("Proxy did not listen");
+      const fallback = yield* HttpClient.HttpClient;
       const client = yield* makeAntigravityUsageHttpClient({
         environment: {
           HTTPS_PROXY: `http://127.0.0.1:${address.port}`,
           NO_PROXY: "",
         },
-        fallback: HttpClient.make(() => Effect.die("The direct HTTP client must not be used")),
+        fallback,
       });
       const body = yield* HttpClient.get("http://antigravity.invalid/v1internal:quota").pipe(
         Effect.provideService(HttpClient.HttpClient, client),
@@ -202,7 +203,11 @@ describe("Antigravity subscription limits", () => {
       );
       expect(body).toEqual({ proxied: true });
       expect(requests).toEqual(["http://antigravity.invalid/v1internal:quota"]);
-    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, FetchHttpClient.layer)),
+      Effect.provideService(FetchHttpClient.Fetch, async () => Response.json({ proxied: false })),
+    ),
   );
 
   // Oracle: the 10:16 UTC payload and its narrow Workaround rule.

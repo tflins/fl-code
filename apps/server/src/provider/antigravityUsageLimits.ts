@@ -220,10 +220,11 @@ export const makeAntigravityUsageHttpClient = Effect.fn("makeAntigravityUsageHtt
           dispatcher,
         } as Parameters<typeof undici.fetch>[1],
       ) as unknown as Promise<Response>;
-    const context = yield* Layer.build(
-      FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, proxyFetch))),
+    const client = Context.get(yield* Layer.build(FetchHttpClient.layer), HttpClient.HttpClient);
+    // The server may have already built this layer with its global fetch.
+    return client.pipe(
+      HttpClient.transformResponse(Effect.provideService(FetchHttpClient.Fetch, proxyFetch)),
     );
-    return Context.get(context, HttpClient.HttpClient);
   },
 );
 
