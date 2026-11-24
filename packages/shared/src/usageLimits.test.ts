@@ -1873,6 +1873,29 @@ describe("external usage settings", () => {
     expect(exhaustedUsageWindow(proxied, now, "auto/deepseek-v4.1-flash")).toBeUndefined();
   });
 
+  it("reports a proxied login's account quota read failure", () => {
+    const checkedAt = "2026-09-03T11:00:00.000Z";
+    const proxied = provider({
+      auth: { status: "authenticated", type: "chatgpt", email: "account@example.com" },
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "unsupported" } },
+      accountUsageLimits: {
+        checkedAt,
+        windows: [],
+        unavailable: { reason: "probeFailed", message: "Account rate limits request timed out." },
+      },
+    });
+    const presentations = new Map([
+      [
+        EnvironmentId.make("host"),
+        { entry: { target: { label: "Host" } }, serverConfig: { providers: [proxied] } },
+      ],
+    ]);
+
+    expect(collectLimitNotices(presentations)).toContain(
+      "codex: Account rate limits request timed out.",
+    );
+  });
+
   it("deduplicates destinations across accounts and environments without inventing quota pools", () => {
     const managed = provider({
       usageLimits: {

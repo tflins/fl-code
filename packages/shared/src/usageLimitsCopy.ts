@@ -10,6 +10,7 @@ import type { MFunctionType } from "gt-i18n/types";
 import {
   collectExternalUsageLinks as collectExternalUsageLinksWith,
   cursorUsageWindowDetails as cursorUsageWindowDetailsBase,
+  displayUsageLimits,
   type LimitPool,
   type LimitPresentations,
   providersWithLimits,
@@ -92,7 +93,7 @@ export function collectLimitNotices(
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      const limits = provider.usageLimits;
+      const limits = displayUsageLimits(provider);
       const name = provider.displayName?.trim() || String(provider.driver);
       if (provider.accountUsageLimits) {
         notices.add(
