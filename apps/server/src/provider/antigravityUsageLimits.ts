@@ -11,9 +11,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as Layer from "effect/Layer";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
@@ -177,6 +179,53 @@ class AntigravityKeyringError extends Schema.TaggedError<AntigravityKeyringError
 
 // A single-executable server resolves packages on disk only through `require`.
 const requireExternal = NodeModule.createRequire(import.meta.url);
+
+function environmentValue(environment: NodeJS.ProcessEnv, upper: string, lower: string) {
+  return environment[upper] ?? environment[lower];
+}
+
+/**
+ * Provider proxies are part of the instance environment. Create a scoped HTTP
+ * client from it so the server's global dispatcher does not silently bypass
+ * per-instance proxy settings.
+ */
+export const makeAntigravityUsageHttpClient = Effect.fn("makeAntigravityUsageHttpClient")(
+  function* (input: {
+    readonly environment: NodeJS.ProcessEnv;
+    readonly fallback: HttpClient.HttpClient;
+  }): Effect.fn.Return<HttpClient.HttpClient, never, Scope.Scope> {
+    const httpProxy = environmentValue(input.environment, "HTTP_PROXY", "http_proxy");
+    const httpsProxy = environmentValue(input.environment, "HTTPS_PROXY", "https_proxy");
+    const effectiveProxy = httpsProxy ?? httpProxy;
+    if (effectiveProxy === undefined || effectiveProxy.trim() === "") return input.fallback;
+
+    const noProxy = environmentValue(input.environment, "NO_PROXY", "no_proxy") ?? "";
+    const undici = requireExternal("undici") as typeof import("undici");
+    const dispatcher = yield* Effect.acquireRelease(
+      Effect.sync(
+        () =>
+          new undici.EnvHttpProxyAgent({
+            httpProxy: httpProxy ?? effectiveProxy,
+            httpsProxy: effectiveProxy,
+            noProxy,
+          }),
+      ),
+      (agent) => Effect.promise(() => agent.close()).pipe(Effect.ignore),
+    );
+    const proxyFetch: typeof globalThis.fetch = (request, init) =>
+      undici.fetch(
+        request as Parameters<typeof undici.fetch>[0],
+        {
+          ...(init as Parameters<typeof undici.fetch>[1]),
+          dispatcher,
+        } as Parameters<typeof undici.fetch>[1],
+      ) as unknown as Promise<Response>;
+    const context = yield* Layer.build(
+      FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, proxyFetch))),
+    );
+    return Context.get(context, HttpClient.HttpClient);
+  },
+);
 
 /**
  * go-keyring's Windows target is `gemini:antigravity`; @napi-rs/keyring reads `antigravity.gemini`,
@@ -433,13 +482,16 @@ export const AntigravityKeyringTokenReader = Context.Reference<
 export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(function* (input: {
   readonly profileDirectory: string;
   readonly authMethod: AntigravitySettings["authMethod"];
+  readonly httpClient?: HttpClient.HttpClient;
   readonly readKeyringToken?: Effect.Effect<string | undefined>;
   readonly oauthClient?: AntigravityOAuthClient;
   readonly readKeyringSecret?: Effect.Effect<string | undefined, AntigravityKeyringError>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+  const client = (input.httpClient ?? (yield* HttpClient.HttpClient)).pipe(
+    HttpClient.filterStatusOk,
+  );
   const crypto = yield* Digest.Digest;
   const platform = yield* HostProcess.Platform;
   const architecture = yield* HostProcess.Architecture;

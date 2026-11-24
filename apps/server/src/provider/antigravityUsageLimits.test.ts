@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The test needs a local forwarding proxy.
+import * as NodeHttp from "node:http";
+
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -14,6 +17,7 @@ import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import type { AntigravityOAuthClient } from "./antigravityOAuthClient.ts";
 import {
   decodeGoKeyringSecret,
+  makeAntigravityUsageHttpClient,
   makeAntigravityUsageProbe,
   readWindowsCliCredential,
 } from "./antigravityUsageLimits.ts";
@@ -160,6 +164,47 @@ const fixture = Effect.fn("AntigravityUsageTest.fixture")(function* (
 });
 
 describe("Antigravity subscription limits", () => {
+  it.effect("uses the provider instance proxy for quota requests", () =>
+    Effect.gen(function* () {
+      const requests: Array<string | undefined> = [];
+      const proxy = NodeHttp.createServer((request, response) => {
+        requests.push(request.url);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ proxied: true }));
+      });
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve, reject) => {
+            proxy.once("error", reject);
+            proxy.listen(0, "127.0.0.1", resolve);
+          }),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              proxy.close(() => resolve());
+            }),
+        ),
+      );
+      const address = proxy.address();
+      if (address === null || typeof address === "string") throw new Error("Proxy did not listen");
+      const client = yield* makeAntigravityUsageHttpClient({
+        environment: {
+          HTTPS_PROXY: `http://127.0.0.1:${address.port}`,
+          NO_PROXY: "",
+        },
+        fallback: HttpClient.make(() => Effect.die("The direct HTTP client must not be used")),
+      });
+      const body = yield* HttpClient.get("http://antigravity.invalid/v1internal:quota").pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.flatMap((response) => response.json),
+      );
+      expect(body).toEqual({ proxied: true });
+      expect(requests).toEqual(["http://antigravity.invalid/v1internal:quota"]);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
   // Oracle: the 10:16 UTC payload and its narrow Workaround rule.
   it.effect("omits rolling resets for untouched summary buckets and keeps used Gemini resets", () =>
     Effect.gen(function* () {
