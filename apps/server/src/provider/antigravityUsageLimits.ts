@@ -23,7 +23,6 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
-import type { AntigravityOAuthClient } from "./antigravityOAuthClient.ts";
 
 export function antigravityUserAgent(platform: NodeJS.Platform, architecture: NodeJS.Architecture) {
   return `antigravity/hub/2.24.0 (aidev_client; os_type=${platform}; arch=${architecture}; cl=963137146)`;
@@ -378,8 +377,7 @@ function modelWindows(models: typeof Models.Type) {
 
 interface ResolvedAntigravityCredential {
   readonly fingerprintSeed: string;
-  readonly oauthClient: AntigravityOAuthClient | undefined;
-  readonly refreshToken?: string | undefined;
+  readonly legacyOAuth?: typeof TokenFile.Type;
   readonly accessToken?: string | undefined;
   readonly expiresAt?: number | undefined;
   readonly projectId?: string | undefined;
@@ -446,10 +444,7 @@ function readSystemKeyringToken(
   return readCliKeyringSecret(platform, architecture);
 }
 
-function parseCliCredential(
-  raw: string,
-  oauthClient: AntigravityOAuthClient | undefined,
-): Effect.Effect<ResolvedAntigravityCredential | undefined> {
+function parseCliCredential(raw: string): Effect.Effect<ResolvedAntigravityCredential | undefined> {
   return Effect.try({
     try: () => decodeGoKeyringSecret(Buffer.from(raw.trim(), "utf8")),
     catch: () => undefined,
@@ -462,9 +457,7 @@ function parseCliCredential(
       const parsedExpiry = stored.token.expiry ? Date.parse(stored.token.expiry) : Number.NaN;
       const projectId = stored.project_id?.trim() || undefined;
       return {
-        fingerprintSeed: `cli\0${oauthClient?.clientId ?? ""}\0${refreshToken ?? accessToken ?? ""}\0${projectId ?? ""}`,
-        oauthClient,
-        refreshToken,
+        fingerprintSeed: `cli\0${refreshToken ?? accessToken ?? ""}\0${projectId ?? ""}`,
         accessToken,
         expiresAt: Number.isFinite(parsedExpiry) ? parsedExpiry : undefined,
         projectId,
@@ -485,7 +478,6 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
   readonly authMethod: AntigravitySettings["authMethod"];
   readonly httpClient?: HttpClient.HttpClient;
   readonly readKeyringToken?: Effect.Effect<string | undefined>;
-  readonly oauthClient?: AntigravityOAuthClient;
   readonly readKeyringSecret?: Effect.Effect<string | undefined, AntigravityKeyringError>;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -518,8 +510,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       const token = yield* fs.readFileString(tokenPath).pipe(Effect.flatMap(decodeTokenFile));
       return {
         fingerprintSeed: `${token.client_id}\0${token.refresh_token}\0${token.project_id ?? ""}`,
-        oauthClient: { clientId: token.client_id, clientSecret: token.client_secret },
-        refreshToken: token.refresh_token,
+        legacyOAuth: token,
         projectId: token.project_id,
       } satisfies ResolvedAntigravityCredential;
     }
@@ -529,7 +520,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
       : input.authMethod === "oauth-business"
         ? yield* readKeyringSecret
         : undefined;
-    return stored === undefined ? undefined : yield* parseCliCredential(stored, input.oauthClient);
+    return stored === undefined ? undefined : yield* parseCliCredential(stored);
   });
 
   const request = (request: HttpClientRequest.HttpClientRequest) =>
@@ -556,6 +547,7 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
     }
     const fingerprint = yield* sha256(credential.fingerprintSeed);
     const now = yield* Clock.currentTimeMillis;
+    const legacyOAuth = credential.legacyOAuth;
     let accessToken: string;
     let expiresAt: number;
     if (
@@ -565,16 +557,20 @@ export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(
     ) {
       accessToken = credential.accessToken;
       expiresAt = credential.expiresAt;
-    } else if (cached?.fingerprint === fingerprint && cached.expiresAt > now + 60_000) {
+    } else if (
+      legacyOAuth !== undefined &&
+      cached?.fingerprint === fingerprint &&
+      cached.expiresAt > now + 60_000
+    ) {
       accessToken = cached.accessToken;
       expiresAt = cached.expiresAt;
-    } else if (credential.oauthClient !== undefined && credential.refreshToken !== undefined) {
+    } else if (legacyOAuth !== undefined) {
       const refreshed = yield* request(
         HttpClientRequest.post("https://oauth2.googleapis.com/token").pipe(
           HttpClientRequest.bodyUrlParams({
-            client_id: credential.oauthClient.clientId,
-            client_secret: credential.oauthClient.clientSecret,
-            refresh_token: credential.refreshToken,
+            client_id: legacyOAuth.client_id,
+            client_secret: legacyOAuth.client_secret,
+            refresh_token: legacyOAuth.refresh_token,
             grant_type: "refresh_token",
           }),
         ),

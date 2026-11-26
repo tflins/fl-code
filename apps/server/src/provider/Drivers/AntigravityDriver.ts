@@ -75,7 +75,6 @@ import {
   makeAntigravityUsageHttpClient,
   makeAntigravityUsageProbe,
 } from "../antigravityUsageLimits.ts";
-import { loadAntigravityOAuthClient } from "../antigravityOAuthClient.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import {
@@ -584,16 +583,10 @@ export const AntigravityDriver: ProviderDriver<
       };
     });
 
-    const oauthClient = yield* loadAntigravityOAuthClient({
-      environment: processEnvironment,
-      configPath: path.join(host.paths.baseDir, "antigravity-oauth-client.json"),
-      fs: fileSystem,
-    });
     const usage = yield* makeAntigravityUsageProbe({
       profileDirectory,
       authMethod: auth.authMethod,
       httpClient: usageHttpClient,
-      ...(oauthClient === undefined ? {} : { oauthClient }),
     }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
