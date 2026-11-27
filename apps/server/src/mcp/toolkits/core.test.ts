@@ -21,7 +21,6 @@ import {
   TurnItemId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ProjectedTurnItem,
-  type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import { pinOrderKeyBetween } from "@t3tools/shared/pinOrderKey";
 import * as DateTime from "effect/DateTime";
@@ -404,15 +403,12 @@ it.effect("returns an HTML render reference that Codex and Claude tool rows both
         Layer.provide(
           Layer.mock(ThreadManagement.ThreadManagementService)({
             getThreadShell: (id) =>
-              Effect.succeed({
-                id,
-                deletedAt: null,
-                archivedAt: null,
-                activeRunId: RunId.make("mcp-core-run"),
-                providerInstanceId: ProviderInstanceId.make("codex"),
-                runtimeMode: id === fullAccessThreadId ? "full-access" : "approval-required",
-                interactionMode: "default",
-              } as OrchestrationV2ThreadShell),
+              Effect.succeed(
+                McpToolAccessTestkit.liveThreadShell(id, {
+                  activeRunId: RunId.make("mcp-core-run"),
+                  runtimeMode: id === fullAccessThreadId ? "full-access" : "approval-required",
+                }),
+              ),
           }),
         ),
       ),
