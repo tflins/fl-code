@@ -104,6 +104,7 @@ import {
   delegatedTaskProgress,
   scopeDelegatedTask,
   delegatedTaskReportRuns,
+  monitorUpdateRunIds,
 } from "@t3tools/provider-core/server/subagentProjection";
 import {
   DispatchModeLimit,
@@ -140,6 +141,7 @@ import {
 import * as Metrics from "../observability/Metrics.ts";
 import {
   interactionModeRank,
+  refuseAgentModePick,
   resolveInteractionMode,
   resolveRuntimeMode,
   runtimeModeRank,
@@ -800,11 +802,7 @@ function latestTerminalResultRun(
   delegatedRun: OrchestrationV2Run | undefined,
   awaitingContinuationRun: OrchestrationV2Run | undefined,
 ): OrchestrationV2Run | undefined {
-  const monitorRunIds = new Set(
-    projection.messages
-      .filter((message) => message.notification?.source.kind === "monitor")
-      .map((message) => message.runId),
-  );
+  const monitorRunIds = monitorUpdateRunIds(projection.messages, projection.runs);
   // A restart-cut run, and each cut run before it in the chain, has no outcome while a
   // continuation is pending, live, or ran to a result.
   const runsById = new Map(projection.runs.map((run) => [run.id, run]));
@@ -1824,6 +1822,8 @@ const make = Effect.gen(function* () {
     readonly providers: ReadonlyArray<ServerProvider>;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
+    /** A retry replays its accepted command; refusing it here would lose that replay. */
+    readonly skipAgentModeRefusal?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
     const requestedInstanceId = input.target?.providerInstanceId;
     const requestedDriver = input.target?.driverKind;
@@ -1919,6 +1919,17 @@ const make = Effect.gen(function* () {
     const advertised = advertisedModel(provider, model);
     const descriptors = advertised?.capabilities?.optionDescriptors;
     const requestedOptions = yield* validateModelOptions(provider, model, input.target?.options);
+    if (input.skipAgentModeRefusal !== true) {
+      yield* refuseAgentModePick({
+        callerRuntimeMode: input.parent.thread.runtimeMode,
+        picked: requestedOptions,
+        descriptors: descriptors ?? [],
+        held:
+          instanceId === input.parent.thread.modelSelection.instanceId
+            ? input.parent.thread.modelSelection.options
+            : undefined,
+      });
+    }
 
     const inheritsOptions =
       instanceId === inheritedSelection.instanceId &&
@@ -2020,7 +2031,9 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(threadManagementFailure));
     const childControls = scopeDelegatedTask(childRecords, task.id);
     const childRun = delegatedTaskRun(childControls, task);
-    const progress = delegatedTaskProgress(childControls);
+    const progress = delegatedTaskProgress(childControls, {
+      unsettled: task.result === null && task.cancelledRunId === undefined,
+    });
     const followupRuns =
       childRun?.delegatedTaskId === task.id ? delegatedTaskRuns(childControls, task.id) : undefined;
     const taskResultRun =
@@ -3086,6 +3099,7 @@ const make = Effect.gen(function* () {
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+        skipAgentModeRefusal: isRetryOfAcceptedDelegation,
       });
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
@@ -3532,6 +3546,7 @@ const make = Effect.gen(function* () {
                 providers,
                 cwd,
                 skipProjectEnablementFilter: isRetryOfAcceptedCreation,
+                skipAgentModeRefusal: isRetryOfAcceptedCreation,
               });
               const runtimeMode = yield* resolveRuntimeMode(
                 parent.thread.runtimeMode,
